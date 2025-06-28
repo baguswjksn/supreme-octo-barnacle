@@ -6,7 +6,9 @@ from datetime import datetime
 import os
 import telebot
 from dotenv import load_dotenv
+from openpyxl.chart import PieChart, Reference, Series
 from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.chart import LineChart, Reference
 
 # Load environment variables
 load_dotenv()
@@ -56,7 +58,7 @@ def add_borders(ws):
     for row in ws.iter_rows():
         for cell in row:
             cell.border = thin_border
-
+            
 def generate_excel_report(data, report_file):
     wb = Workbook()
 
@@ -138,6 +140,57 @@ def generate_excel_report(data, report_file):
         auto_resize_columns(ws, month_rows)
         add_borders(ws)
 
+        # Calculate expense totals by category for the month
+        expense_by_category = {}
+        for row in month_rows:
+            if row[1] == 'expense':
+                category = row[2]
+                amount = row[3]
+                expense_by_category[category] = expense_by_category.get(category, 0) + amount
+
+        # Add expense summary table to the sheet (starting at cell I2)
+        start_col = 9  # Column I
+        start_row = 2  # Row 2
+
+        ws.cell(row=start_row, column=start_col, value="Expense Category")
+        ws.cell(row=start_row, column=start_col + 1, value="Amount")
+        ws.cell(row=start_row, column=start_col).font = header_font
+        ws.cell(row=start_row, column=start_col + 1).font = header_font
+
+        for i, (category, amount) in enumerate(expense_by_category.items(), start=start_row + 1):
+            ws.cell(row=i, column=start_col, value=category)
+            ws.cell(row=i, column=start_col + 1, value=amount)
+
+        # Create pie chart for expenses
+        pie = PieChart()
+        pie.title = "Expense Breakdown"
+
+        data_ref = Reference(ws, min_col=start_col + 1, min_row=start_row, max_row=start_row + len(expense_by_category))
+        labels_ref = Reference(ws, min_col=start_col, min_row=start_row + 1, max_row=start_row + len(expense_by_category))
+        pie.add_data(data_ref, titles_from_data=True)
+        pie.set_categories(labels_ref)
+
+        # Position the chart in cell L2 (column 12)
+        ws.add_chart(pie, "L2")
+
+        # Create line chart for Income and Expense in the Summary sheet
+        line_chart = LineChart()
+        line_chart.title = "Income and Expense Over Time"
+        line_chart.style = 13
+        line_chart.y_axis.title = "Amount"
+        line_chart.x_axis.title = "Month"
+
+        # Data range for the chart (Income and Expense)
+        data = Reference(ws_summary, min_col=2, max_col=3, min_row=1, max_row=ws_summary.max_row)
+        line_chart.add_data(data, titles_from_data=True)
+
+        # Categories for x-axis (Month)
+        categories = Reference(ws_summary, min_col=1, min_row=2, max_row=ws_summary.max_row)
+        line_chart.set_categories(categories)
+
+        # Position chart at cell E2
+        ws_summary.add_chart(line_chart, "E2")
+
     wb.save(report_file)
 # Function to send the file to the specified Telegram user
 def send_report_to_telegram(report_file):
@@ -146,7 +199,7 @@ def send_report_to_telegram(report_file):
 
 # Main function to execute the script
 def main():
-    db_path = "app_kakeibo.db"
+    db_path = "/home/baguswijaksono/apps/ayunda/app_kakeibo.db"
     report_file = "transactions_report.xlsx"
     
     # Fetch data from database
