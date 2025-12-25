@@ -3,24 +3,26 @@ package main
 import (
 	"database/sql"
 	"fmt"
+    "flag"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 	"os/exec"
 
 	"github.com/joho/godotenv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	_"github.com/glebarez/sqlite"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 var (
 	API_TOKEN       string
 	ALLOWED_USER_ID int64
 	DB_PATH         string
-	categories      = []string
-	bot *tgbotapi.BotAPI
-	db  *sql.DB
+	categories      []string
+	bot             *tgbotapi.BotAPI
+	db              *sql.DB
 )
 
 type TransactionState struct {
@@ -30,22 +32,36 @@ type TransactionState struct {
 	Category        string
 	Amount          float64
 	Description     string
+	EditID          int64 // ID of transaction being edited
 }
 
 var userStates = make(map[int64]*TransactionState)
 
 func main() {
-	// Load environment variables
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
+	var err error
+	// Load environment variables (optional fallback)
+	if err = godotenv.Load(); err != nil {
+		log.Println("No .env file found, continuing")
 	}
+
+	// Command-line flag: --data or -data
+	dataPath := flag.String("data", "", "Path to database file")
+	flag.Parse()
 
 	API_TOKEN = os.Getenv("API_TOKEN")
 	ALLOWED_USER_ID, _ = strconv.ParseInt(os.Getenv("ALLOWED_USER_ID"), 10, 64)
-	DB_PATH = os.Getenv("DB_PATH")
 
-	// Parse categories
+	if *dataPath != "" {
+		DB_PATH = *dataPath
+	} else {
+		DB_PATH = os.Getenv("DB_PATH")
+	}
+
+	if DB_PATH == "" {
+		log.Fatal("DB path must be provided via --data or DB_PATH env var")
+	}
+
+	// categories
 	catStr := os.Getenv("CATEGORIES")
 	if catStr != "" {
 		categories = strings.Split(catStr, ",")
@@ -66,7 +82,7 @@ func main() {
 	}
 
 	// Initialize database
-	db, err = sql.Open("sqlite", DB_PATH)
+	db, err = sql.Open("sqlite3", DB_PATH)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -118,6 +134,19 @@ func handleMessage(message *tgbotapi.Message) {
 		get_latest_report(message.Chat.ID)
 	case "get_weekly_expense":
 		get_weekly_expense_report(message.Chat.ID)
+	case "edit":
+		// If provided an argument (id), try to start edit flow directly
+		args := strings.TrimSpace(message.CommandArguments())
+		if args != "" {
+			id, err := strconv.ParseInt(args, 10, 64)
+			if err != nil {
+				sendMessage(message.Chat.ID, "Invalid ID provided. Usage: /edit <id>")
+				return
+			}
+			startEditWithID(message.Chat.ID, userID, id)
+		} else {
+			startEdit(message.Chat.ID, userID)
+		}
 	default:
 		if state, exists := userStates[userID]; exists {
 			switch state.Step {
@@ -125,6 +154,14 @@ func handleMessage(message *tgbotapi.Message) {
 				processAmount(message, state)
 			case "ENTER_DESCRIPTION":
 				processDescription(message, state)
+			case "ENTER_EDIT_ID":
+				processEditId(message, state)
+			case "ENTER_EDIT_AMOUNT":
+				processEditAmountEdit(message, state)
+			case "ENTER_EDIT_DESCRIPTION":
+				processEditDescriptionEdit(message, state)
+			default:
+				sendMessage(message.Chat.ID, "I don't understand that command.")
 			}
 		} else {
 			sendMessage(message.Chat.ID, "I don't understand that command.")
@@ -141,14 +178,24 @@ func handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
 
 	state, exists := userStates[userID]
 	if !exists {
+		// If there's no state but callback comes from edit menu, ignore
 		return
 	}
+
+	// Optionally answer callback to remove "loading" state in Telegram clients
+	_, _ = bot.Request(tgbotapi.NewCallback(callback.ID, ""))
 
 	switch state.Step {
 	case "SELECT_TYPE":
 		processTransactionType(callback, state)
 	case "SELECT_CATEGORY":
 		processCategory(callback, state)
+	case "SELECT_EDIT_FIELD":
+		processEditField(callback, state)
+	case "SELECT_EDIT_TYPE":
+		processEditTransactionType(callback, state)
+	case "SELECT_EDIT_CATEGORY":
+		processEditCategory(callback, state)
 	}
 }
 
@@ -241,7 +288,6 @@ func processDescription(message *tgbotapi.Message, state *TransactionState) {
 	sendMessage(message.Chat.ID, "Transaction added successfully!")
 }
 
-
 func showSummary(chatID int64) {
 	currentMonth := time.Now().UTC().Format("01")
 	rows, err := db.Query("SELECT type, SUM(amount) as total FROM transactions WHERE strftime('%m', created_at) = ? GROUP BY type", currentMonth)
@@ -275,7 +321,7 @@ func showSummary(chatID int64) {
 
 	balance := incomeTotal - expenseTotal
 	summaryMessage := fmt.Sprintf("Monthly Summary Report for %s:\n\n", time.Now().Format("January 2006"))
-	summaryMessage += fmt.Sprintf("Total Income: %.2f\nTotal Expense: %.2f\n\nBalance: %.2f", 
+	summaryMessage += fmt.Sprintf("Total Income: %.2f\nTotal Expense: %.2f\n\nBalance: %.2f",
 		incomeTotal, expenseTotal, balance)
 	sendMessage(chatID, summaryMessage)
 }
@@ -325,7 +371,6 @@ func get_latest_report(chatID int64) {
 	sendMessage(chatID, string(output))
 }
 
-
 func get_weekly_expense_report(chatID int64) {
 	cmd := exec.Command("python3", "src/g_weekly_e_r.py") // Replace with your Python script path
 	output, err := cmd.CombinedOutput()
@@ -338,3 +383,229 @@ func get_weekly_expense_report(chatID int64) {
 	sendMessage(chatID, string(output))
 }
 
+/*
+	EDIT / UPDATE feature
+*/
+
+// startEdit initiates the interactive edit flow asking for ID
+func startEdit(chatID int64, userID int64) {
+	state := &TransactionState{
+		UserID: userID,
+		Step:   "ENTER_EDIT_ID",
+	}
+	userStates[userID] = state
+	sendMessage(chatID, "Please enter the transaction ID you want to edit.")
+}
+
+// startEditWithID begins edit flow immediately when ID is already provided
+func startEditWithID(chatID int64, userID int64, id int64) {
+	// check if transaction exists
+	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	var (
+		rid         int64
+		typ         string
+		category    string
+		amount      float64
+		description sql.NullString
+		createdAt   string
+	)
+	err := row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			sendMessage(chatID, fmt.Sprintf("Transaction with ID %d not found.", id))
+			return
+		}
+		sendMessage(chatID, "Failed to retrieve transaction.")
+		log.Printf("DB scan error: %v", err)
+		return
+	}
+
+	state := &TransactionState{
+		UserID:      userID,
+		Step:        "SELECT_EDIT_FIELD",
+		EditID:      id,
+		TransactionType: typ,
+		Category:    category,
+		Amount:      amount,
+	}
+	if description.Valid {
+		state.Description = description.String
+	}
+	userStates[userID] = state
+
+	// Show current record details and present edit options
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nChoose field to edit:",
+		id, typ, category, amount, state.Description)
+	buttons := [][]tgbotapi.InlineKeyboardButton{
+		{
+			tgbotapi.NewInlineKeyboardButtonData("Edit Type", "edit_field:type"),
+			tgbotapi.NewInlineKeyboardButtonData("Edit Category", "edit_field:category"),
+		},
+		{
+			tgbotapi.NewInlineKeyboardButtonData("Edit Amount", "edit_field:amount"),
+			tgbotapi.NewInlineKeyboardButtonData("Edit Description", "edit_field:description"),
+		},
+	}
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	sendMessageWithKeyboard(chatID, details, keyboard)
+}
+
+// processEditId handles user input for the ID to edit
+func processEditId(message *tgbotapi.Message, state *TransactionState) {
+	id, err := strconv.ParseInt(strings.TrimSpace(message.Text), 10, 64)
+	if err != nil || id <= 0 {
+		sendMessage(message.Chat.ID, "Invalid ID. Please enter a valid transaction ID number.")
+		return
+	}
+
+	// Check transaction exists
+	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	var (
+		rid         int64
+		typ         string
+		category    string
+		amount      float64
+		description sql.NullString
+		createdAt   string
+	)
+	err = row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			sendMessage(message.Chat.ID, fmt.Sprintf("Transaction with ID %d not found.", id))
+			return
+		}
+		sendMessage(message.Chat.ID, "Failed to retrieve transaction.")
+		log.Printf("DB scan error: %v", err)
+		return
+	}
+
+	state.EditID = id
+	state.TransactionType = typ
+	state.Category = category
+	state.Amount = amount
+	if description.Valid {
+		state.Description = description.String
+	}
+	state.Step = "SELECT_EDIT_FIELD"
+
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nChoose field to edit:",
+		id, typ, category, amount, state.Description)
+	buttons := [][]tgbotapi.InlineKeyboardButton{
+		{
+			tgbotapi.NewInlineKeyboardButtonData("Edit Type", "edit_field:type"),
+			tgbotapi.NewInlineKeyboardButtonData("Edit Category", "edit_field:category"),
+		},
+		{
+			tgbotapi.NewInlineKeyboardButtonData("Edit Amount", "edit_field:amount"),
+			tgbotapi.NewInlineKeyboardButtonData("Edit Description", "edit_field:description"),
+		},
+	}
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	sendMessageWithKeyboard(message.Chat.ID, details, keyboard)
+}
+
+// processEditField handles the callback when user selects which field to edit
+func processEditField(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+	// callback.Data will be like "edit_field:amount"
+	parts := strings.SplitN(callback.Data, ":", 2)
+	if len(parts) != 2 {
+		sendMessage(callback.Message.Chat.ID, "Invalid selection.")
+		return
+	}
+	field := parts[1]
+
+	switch field {
+	case "type":
+		// show types (income/expense)
+		state.Step = "SELECT_EDIT_TYPE"
+		buttons := [][]tgbotapi.InlineKeyboardButton{
+			{
+				tgbotapi.NewInlineKeyboardButtonData("Income", "income"),
+				tgbotapi.NewInlineKeyboardButtonData("Expense", "expense"),
+			},
+			{
+				tgbotapi.NewInlineKeyboardButtonData("Cancel", "edit_cancel"),
+			},
+		}
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+		editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, "Select new type:", keyboard)
+	case "category":
+		state.Step = "SELECT_EDIT_CATEGORY"
+		buttons := make([][]tgbotapi.InlineKeyboardButton, 0)
+		for _, category := range categories {
+			buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(category, category),
+			))
+		}
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+		editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, "Select new category:", keyboard)
+	case "amount":
+		state.Step = "ENTER_EDIT_AMOUNT"
+		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new amount (positive number):")
+	case "description":
+		state.Step = "ENTER_EDIT_DESCRIPTION"
+		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new description (max 100 characters):")
+	default:
+		sendMessage(callback.Message.Chat.ID, "Unknown field selected.")
+	}
+}
+
+// processEditTransactionType handles callback when user selects new type for edit
+func processEditTransactionType(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+	newType := callback.Data
+	// Update DB
+	_, err := db.Exec("UPDATE transactions SET type = ? WHERE id = ?", newType, state.EditID)
+	if err != nil {
+		log.Printf("Failed to update type: %v", err)
+		sendMessage(callback.Message.Chat.ID, "Failed to update transaction type.")
+		return
+	}
+	sendMessage(callback.Message.Chat.ID, fmt.Sprintf("Transaction %d updated: type set to %s", state.EditID, newType))
+	delete(userStates, state.UserID)
+}
+
+// processEditCategory handles callback when user selects new category for edit
+func processEditCategory(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+	newCategory := callback.Data
+	_, err := db.Exec("UPDATE transactions SET category = ? WHERE id = ?", newCategory, state.EditID)
+	if err != nil {
+		log.Printf("Failed to update category: %v", err)
+		sendMessage(callback.Message.Chat.ID, "Failed to update transaction category.")
+		return
+	}
+	sendMessage(callback.Message.Chat.ID, fmt.Sprintf("Transaction %d updated: category set to %s", state.EditID, newCategory))
+	delete(userStates, state.UserID)
+}
+
+// processEditAmountEdit handles updating amount after user inputs it
+func processEditAmountEdit(message *tgbotapi.Message, state *TransactionState) {
+	amount, err := strconv.ParseFloat(message.Text, 64)
+	if err != nil || amount <= 0 {
+		sendMessage(message.Chat.ID, "Invalid amount. Please enter a positive number.")
+		return
+	}
+	_, err = db.Exec("UPDATE transactions SET amount = ? WHERE id = ?", amount, state.EditID)
+	if err != nil {
+		log.Printf("Failed to update amount: %v", err)
+		sendMessage(message.Chat.ID, "Failed to update transaction amount.")
+		return
+	}
+	sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: amount set to %.2f", state.EditID, amount))
+	delete(userStates, state.UserID)
+}
+
+// processEditDescriptionEdit handles updating description after user inputs it
+func processEditDescriptionEdit(message *tgbotapi.Message, state *TransactionState) {
+	if len(message.Text) > 100 {
+		sendMessage(message.Chat.ID, "Description too long. Please keep it under 100 characters.")
+		return
+	}
+	_, err := db.Exec("UPDATE transactions SET description = ? WHERE id = ?", message.Text, state.EditID)
+	if err != nil {
+		log.Printf("Failed to update description: %v", err)
+		sendMessage(message.Chat.ID, "Failed to update transaction description.")
+		return
+	}
+	sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: description set.", state.EditID))
+	delete(userStates, state.UserID)
+}
