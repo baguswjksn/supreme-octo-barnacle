@@ -2,14 +2,14 @@ package main
 
 import (
 	"database/sql"
+	"flag"
 	"fmt"
-    "flag"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
-	"os/exec"
 
 	"github.com/joho/godotenv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -32,7 +32,8 @@ type TransactionState struct {
 	Category        string
 	Amount          float64
 	Description     string
-	EditID          int64 // ID of transaction being edited
+	EditID          int64 // ID of transaction being edited/deleted
+	PromptMessageID int   // message id that was edited to prompt user (used to remove keyboard / show confirmation)
 }
 
 var userStates = make(map[int64]*TransactionState)
@@ -147,6 +148,19 @@ func handleMessage(message *tgbotapi.Message) {
 		} else {
 			startEdit(message.Chat.ID, userID)
 		}
+	case "delete":
+		// If provided an argument (id), try to start delete flow directly
+		args := strings.TrimSpace(message.CommandArguments())
+		if args != "" {
+			id, err := strconv.ParseInt(args, 10, 64)
+			if err != nil {
+				sendMessage(message.Chat.ID, "Invalid ID provided. Usage: /delete <id>")
+				return
+			}
+			startDeleteWithID(message.Chat.ID, userID, id)
+		} else {
+			startDelete(message.Chat.ID, userID)
+		}
 	default:
 		if state, exists := userStates[userID]; exists {
 			switch state.Step {
@@ -160,6 +174,8 @@ func handleMessage(message *tgbotapi.Message) {
 				processEditAmountEdit(message, state)
 			case "ENTER_EDIT_DESCRIPTION":
 				processEditDescriptionEdit(message, state)
+			case "ENTER_DELETE_ID":
+				processDeleteId(message, state)
 			default:
 				sendMessage(message.Chat.ID, "I don't understand that command.")
 			}
@@ -178,7 +194,7 @@ func handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
 
 	state, exists := userStates[userID]
 	if !exists {
-		// If there's no state but callback comes from edit menu, ignore
+		// If there's no state but callback comes from edit/delete menu, ignore
 		return
 	}
 
@@ -196,6 +212,8 @@ func handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
 		processEditTransactionType(callback, state)
 	case "SELECT_EDIT_CATEGORY":
 		processEditCategory(callback, state)
+	case "CONFIRM_DELETE":
+		processDeleteConfirmation(callback, state)
 	}
 }
 
@@ -421,12 +439,12 @@ func startEditWithID(chatID int64, userID int64, id int64) {
 	}
 
 	state := &TransactionState{
-		UserID:      userID,
-		Step:        "SELECT_EDIT_FIELD",
-		EditID:      id,
+		UserID:          userID,
+		Step:            "SELECT_EDIT_FIELD",
+		EditID:          id,
 		TransactionType: typ,
-		Category:    category,
-		Amount:      amount,
+		Category:         category,
+		Amount:           amount,
 	}
 	if description.Valid {
 		state.Description = description.String
@@ -518,6 +536,8 @@ func processEditField(callback *tgbotapi.CallbackQuery, state *TransactionState)
 	case "type":
 		// show types (income/expense)
 		state.Step = "SELECT_EDIT_TYPE"
+		// store the message id that contains the keyboard so we can edit it later (remove keyboard / show result)
+		state.PromptMessageID = callback.Message.MessageID
 		buttons := [][]tgbotapi.InlineKeyboardButton{
 			{
 				tgbotapi.NewInlineKeyboardButtonData("Income", "income"),
@@ -531,19 +551,27 @@ func processEditField(callback *tgbotapi.CallbackQuery, state *TransactionState)
 		editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, "Select new type:", keyboard)
 	case "category":
 		state.Step = "SELECT_EDIT_CATEGORY"
+		state.PromptMessageID = callback.Message.MessageID
 		buttons := make([][]tgbotapi.InlineKeyboardButton, 0)
 		for _, category := range categories {
 			buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(category, category),
 			))
 		}
+		// add cancel row
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Cancel", "edit_cancel"),
+		))
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
 		editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, "Select new category:", keyboard)
 	case "amount":
 		state.Step = "ENTER_EDIT_AMOUNT"
+		// store the message id we edited so we can replace it after user enters value
+		state.PromptMessageID = callback.Message.MessageID
 		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new amount (positive number):")
 	case "description":
 		state.Step = "ENTER_EDIT_DESCRIPTION"
+		state.PromptMessageID = callback.Message.MessageID
 		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new description (max 100 characters):")
 	default:
 		sendMessage(callback.Message.Chat.ID, "Unknown field selected.")
@@ -553,27 +581,49 @@ func processEditField(callback *tgbotapi.CallbackQuery, state *TransactionState)
 // processEditTransactionType handles callback when user selects new type for edit
 func processEditTransactionType(callback *tgbotapi.CallbackQuery, state *TransactionState) {
 	newType := callback.Data
+	chatID := callback.Message.Chat.ID
+	msgID := callback.Message.MessageID
+
+	// handle cancel action
+	if newType == "edit_cancel" {
+		editMessage(chatID, msgID, "Edit canceled.")
+		delete(userStates, state.UserID)
+		return
+	}
+
 	// Update DB
 	_, err := db.Exec("UPDATE transactions SET type = ? WHERE id = ?", newType, state.EditID)
 	if err != nil {
 		log.Printf("Failed to update type: %v", err)
-		sendMessage(callback.Message.Chat.ID, "Failed to update transaction type.")
+		editMessage(chatID, msgID, "Failed to update transaction type.")
+		delete(userStates, state.UserID)
 		return
 	}
-	sendMessage(callback.Message.Chat.ID, fmt.Sprintf("Transaction %d updated: type set to %s", state.EditID, newType))
+	editMessage(chatID, msgID, fmt.Sprintf("Transaction %d updated: type set to %s", state.EditID, newType))
 	delete(userStates, state.UserID)
 }
 
 // processEditCategory handles callback when user selects new category for edit
 func processEditCategory(callback *tgbotapi.CallbackQuery, state *TransactionState) {
 	newCategory := callback.Data
+	chatID := callback.Message.Chat.ID
+	msgID := callback.Message.MessageID
+
+	// handle cancel action
+	if newCategory == "edit_cancel" {
+		editMessage(chatID, msgID, "Edit canceled.")
+		delete(userStates, state.UserID)
+		return
+	}
+
 	_, err := db.Exec("UPDATE transactions SET category = ? WHERE id = ?", newCategory, state.EditID)
 	if err != nil {
 		log.Printf("Failed to update category: %v", err)
-		sendMessage(callback.Message.Chat.ID, "Failed to update transaction category.")
+		editMessage(chatID, msgID, "Failed to update transaction category.")
+		delete(userStates, state.UserID)
 		return
 	}
-	sendMessage(callback.Message.Chat.ID, fmt.Sprintf("Transaction %d updated: category set to %s", state.EditID, newCategory))
+	editMessage(chatID, msgID, fmt.Sprintf("Transaction %d updated: category set to %s", state.EditID, newCategory))
 	delete(userStates, state.UserID)
 }
 
@@ -587,10 +637,24 @@ func processEditAmountEdit(message *tgbotapi.Message, state *TransactionState) {
 	_, err = db.Exec("UPDATE transactions SET amount = ? WHERE id = ?", amount, state.EditID)
 	if err != nil {
 		log.Printf("Failed to update amount: %v", err)
-		sendMessage(message.Chat.ID, "Failed to update transaction amount.")
+		// try to edit prompt message to show failure and remove keyboard
+		if state.PromptMessageID != 0 {
+			editMessage(message.Chat.ID, state.PromptMessageID, "Failed to update transaction amount.")
+		} else {
+			sendMessage(message.Chat.ID, "Failed to update transaction amount.")
+		}
+		delete(userStates, state.UserID)
 		return
 	}
-	sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: amount set to %.2f", state.EditID, amount))
+
+	// Edit the prompt message (where keyboard used to be) to show confirmation and remove inline keyboard
+	if state.PromptMessageID != 0 {
+		editMessage(message.Chat.ID, state.PromptMessageID, fmt.Sprintf("Transaction %d updated: amount set to %.2f", state.EditID, amount))
+	} else {
+		// fallback to sending a message if we don't have the prompt id
+		sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: amount set to %.2f", state.EditID, amount))
+	}
+
 	delete(userStates, state.UserID)
 }
 
@@ -603,9 +667,167 @@ func processEditDescriptionEdit(message *tgbotapi.Message, state *TransactionSta
 	_, err := db.Exec("UPDATE transactions SET description = ? WHERE id = ?", message.Text, state.EditID)
 	if err != nil {
 		log.Printf("Failed to update description: %v", err)
-		sendMessage(message.Chat.ID, "Failed to update transaction description.")
+		if state.PromptMessageID != 0 {
+			editMessage(message.Chat.ID, state.PromptMessageID, "Failed to update transaction description.")
+		} else {
+			sendMessage(message.Chat.ID, "Failed to update transaction description.")
+		}
+		delete(userStates, state.UserID)
 		return
 	}
-	sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: description set.", state.EditID))
+
+	if state.PromptMessageID != 0 {
+		editMessage(message.Chat.ID, state.PromptMessageID, fmt.Sprintf("Transaction %d updated: description set.", state.EditID))
+	} else {
+		sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: description set.", state.EditID))
+	}
+
 	delete(userStates, state.UserID)
+}
+
+/*
+	DELETE feature with confirmation
+*/
+
+// startDelete asks for an ID to delete
+func startDelete(chatID int64, userID int64) {
+	state := &TransactionState{
+		UserID: userID,
+		Step:   "ENTER_DELETE_ID",
+	}
+	userStates[userID] = state
+	sendMessage(chatID, "Please enter the transaction ID you want to delete.")
+}
+
+// startDeleteWithID begins delete flow immediately when ID is already provided
+func startDeleteWithID(chatID int64, userID int64, id int64) {
+	// check if transaction exists
+	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	var (
+		rid         int64
+		typ         string
+		category    string
+		amount      float64
+		description sql.NullString
+		createdAt   string
+	)
+	err := row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			sendMessage(chatID, fmt.Sprintf("Transaction with ID %d not found.", id))
+			return
+		}
+		sendMessage(chatID, "Failed to retrieve transaction.")
+		log.Printf("DB scan error: %v", err)
+		return
+	}
+
+	state := &TransactionState{
+		UserID:          userID,
+		Step:            "CONFIRM_DELETE",
+		EditID:          id,
+		TransactionType: typ,
+		Category:        category,
+		Amount:          amount,
+	}
+	if description.Valid {
+		state.Description = description.String
+	}
+	userStates[userID] = state
+
+	// Show current record details and present confirm options
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nAre you sure you want to DELETE this transaction?",
+		id, typ, category, amount, state.Description)
+	buttons := [][]tgbotapi.InlineKeyboardButton{
+		{
+			tgbotapi.NewInlineKeyboardButtonData("Confirm Delete", "delete_confirm"),
+			tgbotapi.NewInlineKeyboardButtonData("Cancel", "delete_cancel"),
+		},
+	}
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	sendMessageWithKeyboard(chatID, details, keyboard)
+}
+
+// processDeleteId handles user input for the ID to delete
+func processDeleteId(message *tgbotapi.Message, state *TransactionState) {
+	id, err := strconv.ParseInt(strings.TrimSpace(message.Text), 10, 64)
+	if err != nil || id <= 0 {
+		sendMessage(message.Chat.ID, "Invalid ID. Please enter a valid transaction ID number.")
+		return
+	}
+
+	// Check transaction exists
+	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	var (
+		rid         int64
+		typ         string
+		category    string
+		amount      float64
+		description sql.NullString
+		createdAt   string
+	)
+	err = row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			sendMessage(message.Chat.ID, fmt.Sprintf("Transaction with ID %d not found.", id))
+			return
+		}
+		sendMessage(message.Chat.ID, "Failed to retrieve transaction.")
+		log.Printf("DB scan error: %v", err)
+		return
+	}
+
+	state.EditID = id
+	state.TransactionType = typ
+	state.Category = category
+	state.Amount = amount
+	if description.Valid {
+		state.Description = description.String
+	}
+	state.Step = "CONFIRM_DELETE"
+
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nAre you sure you want to DELETE this transaction?",
+		id, typ, category, amount, state.Description)
+	buttons := [][]tgbotapi.InlineKeyboardButton{
+		{
+			tgbotapi.NewInlineKeyboardButtonData("Confirm Delete", "delete_confirm"),
+			tgbotapi.NewInlineKeyboardButtonData("Cancel", "delete_cancel"),
+		},
+	}
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	sendMessageWithKeyboard(message.Chat.ID, details, keyboard)
+}
+
+// processDeleteConfirmation handles callback when user confirms or cancels deletion
+func processDeleteConfirmation(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+	chatID := callback.Message.Chat.ID
+	msgID := callback.Message.MessageID
+
+	switch callback.Data {
+	case "delete_confirm":
+		res, err := db.Exec("DELETE FROM transactions WHERE id = ?", state.EditID)
+		if err != nil {
+			log.Printf("Failed to delete transaction %d: %v", state.EditID, err)
+			// Edit original message to show failure and remove inline keyboard
+			editMessage(chatID, msgID, fmt.Sprintf("Failed to delete transaction %d.", state.EditID))
+			delete(userStates, state.UserID)
+			return
+		}
+		rowsAffected, _ := res.RowsAffected()
+		if rowsAffected == 0 {
+			// Edit original message to show no-op and remove inline keyboard
+			editMessage(chatID, msgID, fmt.Sprintf("No transaction deleted. ID %d may not exist.", state.EditID))
+		} else {
+			// Edit original message to show success and remove inline keyboard
+			editMessage(chatID, msgID, fmt.Sprintf("Transaction %d has been deleted.", state.EditID))
+		}
+		delete(userStates, state.UserID)
+	case "delete_cancel":
+		// Edit original message to show cancellation and remove inline keyboard
+		editMessage(chatID, msgID, "Deletion canceled.")
+		delete(userStates, state.UserID)
+	default:
+		// Unknown selection — edit to remove keyboard and show note
+		editMessage(chatID, msgID, "Unknown selection. No action taken.")
+	}
 }
