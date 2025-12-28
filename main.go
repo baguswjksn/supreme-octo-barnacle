@@ -38,14 +38,16 @@ type TransactionState struct {
 
 var userStates = make(map[int64]*TransactionState)
 
+
 func main() {
 	var err error
-	// Load environment variables (optional fallback)
+
+	// Load env vars (optional)
 	if err = godotenv.Load(); err != nil {
 		log.Println("No .env file found, continuing")
 	}
 
-	// Command-line flag: --data or -data
+	// Flags
 	dataPath := flag.String("data", "", "Path to database file")
 	flag.Parse()
 
@@ -62,52 +64,39 @@ func main() {
 		log.Fatal("DB path must be provided via --data or DB_PATH env var")
 	}
 
-	// categories
-	catStr := os.Getenv("CATEGORIES")
-	if catStr != "" {
-		categories = strings.Split(catStr, ",")
-		for i := range categories {
-			categories[i] = strings.TrimSpace(categories[i])
-		}
-	} else {
-		categories = []string{
-			"Food", "Salary", "Needs", "Water", "Laundry",
-			"Transportation", "Utilities", "Rent", "Bills",
-		}
-	}
-
-	// Initialize bot
+	// Init bot
 	bot, err = tgbotapi.NewBotAPI(API_TOKEN)
 	if err != nil {
 		log.Panic(err)
 	}
+	bot.Debug = true
+	log.Printf("Authorized on account %s", bot.Self.UserName)
 
-	// Initialize database
+	// Init DB (same DB_PATH)
 	db, err = sql.Open("sqlite3", DB_PATH)
 	if err != nil {
 		log.Panic(err)
 	}
 	defer db.Close()
 
-	// Create transactions table if not exists
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS transactions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		type TEXT NOT NULL,
-		category TEXT NOT NULL,
-		amount REAL NOT NULL,
-		description TEXT,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	)`)
+	if err := initDB(db); err != nil {
+		log.Panic(err)
+	}
+
+	if err := seedCategories(db); err != nil {
+		log.Panic(err)
+	}
+
+	categories, err = loadCategories(db)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	bot.Debug = true
-	log.Printf("Authorized on account %s", bot.Self.UserName)
+	log.Printf("Loaded categories: %s", strings.Join(categories, ", "))
 
+	// Telegram updates
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
@@ -117,6 +106,90 @@ func main() {
 			handleCallbackQuery(update.CallbackQuery)
 		}
 	}
+}
+
+func getCategories() ([]string, error) {
+	return loadCategories(db)
+}
+
+
+func initDB(db *sql.DB) error {
+	queries := []string{
+		`CREATE TABLE IF NOT EXISTS categories (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS transactions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			type TEXT NOT NULL,
+			category_id INTEGER NOT NULL,
+			amount REAL NOT NULL,
+			description TEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (category_id) REFERENCES categories(id)
+		)`,
+	}
+
+	for _, q := range queries {
+		if _, err := db.Exec(q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func seedCategories(db *sql.DB) error {
+	defaultCategories := []string{
+		"Food",
+		"Salary",
+		"Needs",
+		"Water",
+		"Laundry",
+		"Transportation",
+		"Utilities",
+		"Rent",
+		"Bills",
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO categories (name) VALUES (?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, cat := range defaultCategories {
+		if _, err := stmt.Exec(cat); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func loadCategories(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT name FROM categories ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		result = append(result, name)
+	}
+	return result, nil
 }
 
 func handleMessage(message *tgbotapi.Message) {
