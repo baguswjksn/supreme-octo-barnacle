@@ -15,8 +15,8 @@ ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
 plt.style.use('dark_background')
 
 # Connect to the SQLite database
-db_path = "app_kakeibo.db"
-conn = sqlite3.connect(db_path)
+DB_PATH = os.getenv("DB_PATH")
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 
 # Get the current date and the date 7 days ago
@@ -31,6 +31,7 @@ query = '''
     GROUP BY DATE(created_at)
     ORDER BY DATE(created_at)
 '''
+
 cursor.execute(query, (start_date.strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d')))
 data = cursor.fetchall()
 conn.close()
@@ -47,11 +48,6 @@ for i, date_label in enumerate(date_labels):
 # Check for threshold
 threshold = 30000
 exceeded_threshold_days = [(date_labels[i], expense) for i, expense in enumerate(expenses) if expense > threshold]
-
-if exceeded_threshold_days:
-    print("Warning: The following days exceeded the threshold of 30000:")
-    for day, amount in exceeded_threshold_days:
-        print(f"{day}: {amount:.2f}")
 
 # Create the chart
 plt.figure(figsize=(10, 5))
@@ -72,8 +68,6 @@ output_path = "weekly_expense_report.png"
 plt.tight_layout()
 plt.savefig(output_path, facecolor='black')
 plt.close()
-
-print(f"Weekly expense report saved as {output_path}")
 
 # Send image via Telegram
 with open(output_path, 'rb') as photo:
