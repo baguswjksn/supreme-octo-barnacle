@@ -208,6 +208,8 @@ func handleMessage(message *tgbotapi.Message) {
 		get_latest_report(message.Chat.ID)
 	case "get_weekly_expense":
 		get_weekly_expense_report(message.Chat.ID)
+    case "get_weekly_expense_piechart":
+	    get_weekly_expense_piechart(message.Chat.ID)
 	case "edit":
 		// If provided an argument (id), try to start edit flow directly
 		args := strings.TrimSpace(message.CommandArguments())
@@ -472,6 +474,17 @@ func get_weekly_expense_report(chatID int64) {
 	}
 
 	sendMessage(chatID, string(output))
+}
+
+func get_weekly_expense_piechart(chatID int64) {
+	cmd := exec.Command("python3", "src/g_w_e_piechart.py", fmt.Sprintf("%d", chatID))
+	cmd.Env = append(os.Environ(), fmt.Sprintf("API_TOKEN=%s", API_TOKEN))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("Error executing piechart script: %v, output: %s", err, string(output))
+		sendMessage(chatID, "Failed to run piechart script. Check logs.")
+		return
+	}
 }
 
 /*
