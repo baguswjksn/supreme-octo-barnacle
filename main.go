@@ -1,27 +1,262 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// --- Minimal Telegram client using only stdlib ---
+// Types mirror only the fields we need.
+type Update struct {
+	UpdateID      int            `json:"update_id"`
+	Message       *TGMessage     `json:"message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+}
+
+type TGMessage struct {
+	MessageID int     `json:"message_id"`
+	From      *TGUser `json:"from,omitempty"`
+	Chat      *TGChat `json:"chat,omitempty"`
+	Text      string  `json:"text,omitempty"`
+	Date      int64   `json:"date,omitempty"`
+}
+
+type TGUser struct {
+	ID        int64  `json:"id"`
+	FirstName string `json:"first_name"`
+	UserName  string `json:"username"`
+}
+
+type TGChat struct {
+	ID int64 `json:"id"`
+}
+
+type CallbackQuery struct {
+	ID      string     `json:"id"`
+	From    *TGUser    `json:"from"`
+	Message *TGMessage `json:"message,omitempty"`
+	Data    string     `json:"data,omitempty"`
+}
+
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"`
+}
+
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
+}
+
+type BotClient struct {
+	token      string
+	baseURL    string
+	httpClient *http.Client
+}
+
+func NewBotClient(token string) *BotClient {
+	return &BotClient{
+		token:      token,
+		baseURL:    fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		httpClient: &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (b *BotClient) apiPost(path string, body interface{}, contentType string) ([]byte, error) {
+	url := b.baseURL + "/" + path
+	var bodyReader io.Reader
+	var ct string
+
+	if contentType == "application/json" {
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return nil, err
+		}
+		bodyReader = &buf
+		ct = "application/json"
+	} else {
+		// body is already an io.Reader for multipart (handled by caller)
+		if rdr, ok := body.(io.Reader); ok {
+			bodyReader = rdr
+			ct = contentType
+		} else {
+			return nil, fmt.Errorf("unsupported body type for contentType %s", contentType)
+		}
+	}
+
+	req, err := http.NewRequest("POST", url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", ct)
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func (b *BotClient) apiGet(path string, params map[string]string) ([]byte, error) {
+	url := b.baseURL + "/" + path
+	if params != nil && len(params) > 0 {
+		q := "?"
+		first := true
+		for k, v := range params {
+			if !first {
+				q += "&"
+			}
+			q += fmt.Sprintf("%s=%s", k, v)
+			first = false
+		}
+		url += q
+	}
+	resp, err := b.httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func (b *BotClient) GetUpdates(offset int, timeout int) ([]Update, error) {
+	params := map[string]string{
+		"timeout": strconv.Itoa(timeout),
+	}
+	if offset > 0 {
+		params["offset"] = strconv.Itoa(offset)
+	}
+	data, err := b.apiGet("getUpdates", params)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		OK     bool     `json:"ok"`
+		Result []Update `json:"result"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result.Result, nil
+}
+
+func (b *BotClient) SendMessage(chatID int64, text string, replyMarkup interface{}) (*TGMessage, error) {
+	payload := map[string]interface{}{
+		"chat_id": chatID,
+		"text":    text,
+	}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+	data, err := b.apiPost("sendMessage", payload, "application/json")
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		OK     bool       `json:"ok"`
+		Result *TGMessage `json:"result"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result.Result, nil
+}
+
+func (b *BotClient) EditMessageText(chatID int64, messageID int, text string, replyMarkup interface{}) (*TGMessage, error) {
+	payload := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       text,
+	}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+	data, err := b.apiPost("editMessageText", payload, "application/json")
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		OK     bool       `json:"ok"`
+		Result *TGMessage `json:"result"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result.Result, nil
+}
+
+func (b *BotClient) AnswerCallbackQuery(callbackID string, text string) error {
+	payload := map[string]interface{}{
+		"callback_query_id": callbackID,
+		"text":              text,
+	}
+	_, err := b.apiPost("answerCallbackQuery", payload, "application/json")
+	return err
+}
+
+// SendPhoto uploads a local file (photoPath) and sends it to chatID with optional caption
+func (b *BotClient) SendPhoto(chatID int64, photoPath string, caption string) (*TGMessage, error) {
+	url := b.baseURL + "/sendPhoto"
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	_ = w.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if caption != "" {
+		_ = w.WriteField("caption", caption)
+	}
+
+	fw, err := w.CreateFormFile("photo", filepath.Base(photoPath))
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(photoPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if _, err := io.Copy(fw, file); err != nil {
+		return nil, err
+	}
+	w.Close()
+
+	returned, err := b.apiPost(url[len(b.baseURL)+1:], &buf, w.FormDataContentType())
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		OK     bool       `json:"ok"`
+		Result *TGMessage `json:"result"`
+	}
+	if err := json.Unmarshal(returned, &result); err != nil {
+		return nil, err
+	}
+	return result.Result, nil
+}
+
+// --- End minimal telegram client ---
 
 var (
 	API_TOKEN       string
 	ALLOWED_USER_ID int64
 	DB_PATH         string
 	categories      []string
-	bot             *tgbotapi.BotAPI
+	botClient       *BotClient
 	db              *sql.DB
 )
 
@@ -37,7 +272,6 @@ type TransactionState struct {
 }
 
 var userStates = make(map[int64]*TransactionState)
-
 
 func main() {
 	var err error
@@ -64,15 +298,22 @@ func main() {
 		log.Fatal("DB path must be provided via --data or DB_PATH env var")
 	}
 
-	// Init bot
-	bot, err = tgbotapi.NewBotAPI(API_TOKEN)
-	if err != nil {
-		log.Panic(err)
+	// Init bot client (stdlib)
+	botClient = NewBotClient(API_TOKEN)
+	// Try to get bot info (optional)
+	if info, err := botClient.apiGet("getMe", nil); err == nil {
+		var me struct {
+			OK     bool            `json:"ok"`
+			Result json.RawMessage `json:"result"`
+		}
+		_ = json.Unmarshal(info, &me)
+		// We don't strictly need it; just log success
+		log.Println("Telegram client initialized (getMe ok)")
+	} else {
+		log.Printf("Failed to call getMe: %v", err)
 	}
-	bot.Debug = true
-	log.Printf("Authorized on account %s", bot.Self.UserName)
 
-	// Init DB (same DB_PATH)
+	// Init DB
 	db, err = sql.Open("sqlite3", DB_PATH)
 	if err != nil {
 		log.Panic(err)
@@ -94,24 +335,34 @@ func main() {
 
 	log.Printf("Loaded categories: %s", strings.Join(categories, ", "))
 
-	// Telegram updates
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
-
-	for update := range updates {
-		if update.Message != nil {
-			handleMessage(update.Message)
-		} else if update.CallbackQuery != nil {
-			handleCallbackQuery(update.CallbackQuery)
+	// Long-polling loop
+	offset := 0
+	for {
+		updates, err := botClient.GetUpdates(offset, 60)
+		if err != nil {
+			log.Printf("GetUpdates error: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		for _, update := range updates {
+			if update.Message != nil {
+				handleMessage(update.Message)
+			} else if update.CallbackQuery != nil {
+				handleCallbackQuery(update.CallbackQuery)
+			}
+			offset = update.UpdateID + 1
 		}
 	}
+}
+
+// Helper to build keyboard in our InlineKeyboardMarkup shape
+func buildKeyboard(rows [][]InlineKeyboardButton) InlineKeyboardMarkup {
+	return InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func getCategories() ([]string, error) {
 	return loadCategories(db)
 }
-
 
 func initDB(db *sql.DB) error {
 	queries := []string{
@@ -120,15 +371,13 @@ func initDB(db *sql.DB) error {
 			name TEXT NOT NULL UNIQUE,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
-
 		`CREATE TABLE IF NOT EXISTS transactions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			type TEXT NOT NULL,
-			category_id INTEGER NOT NULL,
+			category TEXT NOT NULL,
 			amount REAL NOT NULL,
 			description TEXT,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (category_id) REFERENCES categories(id)
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 	}
 
@@ -192,14 +441,30 @@ func loadCategories(db *sql.DB) ([]string, error) {
 	return result, nil
 }
 
-func handleMessage(message *tgbotapi.Message) {
+// Message handlers adapted to stdlib types
+func handleMessage(message *TGMessage) {
+	if message.From == nil {
+		return
+	}
 	userID := message.From.ID
 	if userID != ALLOWED_USER_ID {
 		sendMessage(message.Chat.ID, "You are not authorized to use this bot.")
 		return
 	}
 
-	switch message.Command() {
+	// Detect commands: Telegram sends text like "/add" in message.Text
+	text := strings.TrimSpace(message.Text)
+	command := ""
+	args := ""
+	if text != "" && strings.HasPrefix(text, "/") {
+		parts := strings.SplitN(text, " ", 2)
+		command = strings.TrimPrefix(parts[0], "/")
+		if len(parts) > 1 {
+			args = parts[1]
+		}
+	}
+
+	switch command {
 	case "add":
 		startTransaction(message.Chat.ID, userID)
 	case "summary":
@@ -208,11 +473,10 @@ func handleMessage(message *tgbotapi.Message) {
 		get_latest_report(message.Chat.ID)
 	case "get_weekly_expense":
 		get_weekly_expense_report(message.Chat.ID)
-    case "get_weekly_expense_piechart":
-	    get_weekly_expense_piechart(message.Chat.ID)
+	case "get_weekly_expense_piechart":
+		get_weekly_expense_piechart(message.Chat.ID)
 	case "edit":
-		// If provided an argument (id), try to start edit flow directly
-		args := strings.TrimSpace(message.CommandArguments())
+		args = strings.TrimSpace(args)
 		if args != "" {
 			id, err := strconv.ParseInt(args, 10, 64)
 			if err != nil {
@@ -224,8 +488,7 @@ func handleMessage(message *tgbotapi.Message) {
 			startEdit(message.Chat.ID, userID)
 		}
 	case "delete":
-		// If provided an argument (id), try to start delete flow directly
-		args := strings.TrimSpace(message.CommandArguments())
+		args = strings.TrimSpace(args)
 		if args != "" {
 			id, err := strconv.ParseInt(args, 10, 64)
 			if err != nil {
@@ -260,7 +523,7 @@ func handleMessage(message *tgbotapi.Message) {
 	}
 }
 
-func handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
+func handleCallbackQuery(callback *CallbackQuery) {
 	userID := callback.From.ID
 	if userID != ALLOWED_USER_ID {
 		sendMessage(callback.Message.Chat.ID, "You are not authorized to use this bot.")
@@ -270,11 +533,12 @@ func handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
 	state, exists := userStates[userID]
 	if !exists {
 		// If there's no state but callback comes from edit/delete menu, ignore
+		_ = botClient.AnswerCallbackQuery(callback.ID, "")
 		return
 	}
 
-	// Optionally answer callback to remove "loading" state in Telegram clients
-	_, _ = bot.Request(tgbotapi.NewCallback(callback.ID, ""))
+	// Remove "loading" state in client
+	_ = botClient.AnswerCallbackQuery(callback.ID, "")
 
 	switch state.Step {
 	case "SELECT_TYPE":
@@ -289,6 +553,8 @@ func handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
 		processEditCategory(callback, state)
 	case "CONFIRM_DELETE":
 		processDeleteConfirmation(callback, state)
+	default:
+		// no-op
 	}
 }
 
@@ -299,47 +565,38 @@ func startTransaction(chatID int64, userID int64) {
 	}
 	userStates[userID] = state
 
-	buttons := [][]tgbotapi.InlineKeyboardButton{
+	buttons := [][]InlineKeyboardButton{
 		{
-			tgbotapi.NewInlineKeyboardButtonData("Income", "income"),
-			tgbotapi.NewInlineKeyboardButtonData("Expense", "expense"),
+			InlineKeyboardButton{Text: "Income", CallbackData: "income"},
+			InlineKeyboardButton{Text: "Expense", CallbackData: "expense"},
 		},
 	}
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	keyboard := buildKeyboard(buttons)
 	sendMessageWithKeyboard(chatID, "Please choose the type of transaction:", keyboard)
 }
 
-func processTransactionType(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+func processTransactionType(callback *CallbackQuery, state *TransactionState) {
 	state.TransactionType = callback.Data
 	state.Step = "SELECT_CATEGORY"
 
-	buttons := make([][]tgbotapi.InlineKeyboardButton, 0)
+	buttons := make([][]InlineKeyboardButton, 0)
 	for _, category := range categories {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(category, category),
-		))
+		buttons = append(buttons, []InlineKeyboardButton{
+			{Text: category, CallbackData: category},
+		})
 	}
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
-	editMessageWithKeyboard(
-		callback.Message.Chat.ID,
-		callback.Message.MessageID,
-		fmt.Sprintf("You selected %s. Choose a category:", state.TransactionType),
-		keyboard,
-	)
+	keyboard := buildKeyboard(buttons)
+	editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, fmt.Sprintf("You selected %s. Choose a category:", state.TransactionType), keyboard)
 }
 
-func processCategory(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+func processCategory(callback *CallbackQuery, state *TransactionState) {
 	state.Category = callback.Data
 	state.Step = "ENTER_AMOUNT"
 
-	editMessage(
-		callback.Message.Chat.ID,
-		callback.Message.MessageID,
-		fmt.Sprintf("Selected category: %s. Enter the transaction amount.", state.Category),
-	)
+	editMessage(callback.Message.Chat.ID, callback.Message.MessageID, fmt.Sprintf("Selected category: %s. Enter the transaction amount.", state.Category))
 }
 
-func processAmount(message *tgbotapi.Message, state *TransactionState) {
+func processAmount(message *TGMessage, state *TransactionState) {
 	amount, err := strconv.ParseFloat(message.Text, 64)
 	if err != nil || amount <= 0 {
 		sendMessage(message.Chat.ID, "Invalid amount. Please enter a positive number.")
@@ -351,7 +608,7 @@ func processAmount(message *tgbotapi.Message, state *TransactionState) {
 	sendMessage(message.Chat.ID, "Enter a description for the transaction (max 100 characters).")
 }
 
-func processDescription(message *tgbotapi.Message, state *TransactionState) {
+func processDescription(message *TGMessage, state *TransactionState) {
 	if len(message.Text) > 100 {
 		sendMessage(message.Chat.ID, "Description too long. Please keep it under 100 characters.")
 		return
@@ -419,34 +676,30 @@ func showSummary(chatID int64) {
 	sendMessage(chatID, summaryMessage)
 }
 
+// sendMessage wrapper to use botClient
 func sendMessage(chatID int64, text string) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	_, err := bot.Send(msg)
+	_, err := botClient.SendMessage(chatID, text, nil)
 	if err != nil {
 		log.Printf("Error sending message: %v", err)
 	}
 }
 
-func sendMessageWithKeyboard(chatID int64, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-	_, err := bot.Send(msg)
+func sendMessageWithKeyboard(chatID int64, text string, keyboard InlineKeyboardMarkup) {
+	_, err := botClient.SendMessage(chatID, text, keyboard)
 	if err != nil {
 		log.Printf("Error sending message with keyboard: %v", err)
 	}
 }
 
 func editMessage(chatID int64, messageID int, text string) {
-	msg := tgbotapi.NewEditMessageText(chatID, messageID, text)
-	_, err := bot.Send(msg)
+	_, err := botClient.EditMessageText(chatID, messageID, text, nil)
 	if err != nil {
 		log.Printf("Error editing message: %v", err)
 	}
 }
 
-func editMessageWithKeyboard(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
-	msg := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, keyboard)
-	_, err := bot.Send(msg)
+func editMessageWithKeyboard(chatID int64, messageID int, text string, keyboard InlineKeyboardMarkup) {
+	_, err := botClient.EditMessageText(chatID, messageID, text, keyboard)
 	if err != nil {
 		log.Printf("Error editing message with keyboard: %v", err)
 	}
@@ -465,7 +718,7 @@ func get_latest_report(chatID int64) {
 }
 
 func get_weekly_expense_report(chatID int64) {
-	cmd := exec.Command("python3", "src/g_weekly_e_r.py") // Replace with your Python script path
+	cmd := exec.Command("python3", "src/g_weekly_e_r.py")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("Error executing Python script: %s", err)
@@ -477,6 +730,8 @@ func get_weekly_expense_report(chatID int64) {
 }
 
 func get_weekly_expense_piechart(chatID int64) {
+	// Keep same behavior as before: run external python script with API_TOKEN env.
+	// The Python may send image using API_TOKEN, or print path/output; we relay output.
 	cmd := exec.Command("python3", "src/g_w_e_piechart.py", fmt.Sprintf("%d", chatID))
 	cmd.Env = append(os.Environ(), fmt.Sprintf("API_TOKEN=%s", API_TOKEN))
 	output, err := cmd.CombinedOutput()
@@ -484,6 +739,10 @@ func get_weekly_expense_piechart(chatID int64) {
 		log.Printf("Error executing piechart script: %v, output: %s", err, string(output))
 		sendMessage(chatID, "Failed to run piechart script. Check logs.")
 		return
+	}
+	// If script prints something useful, send it
+	if len(output) > 0 {
+		sendMessage(chatID, string(output))
 	}
 }
 
@@ -503,7 +762,6 @@ func startEdit(chatID int64, userID int64) {
 
 // startEditWithID begins edit flow immediately when ID is already provided
 func startEditWithID(chatID int64, userID int64, id int64) {
-	// check if transaction exists
 	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
@@ -537,32 +795,30 @@ func startEditWithID(chatID int64, userID int64, id int64) {
 	}
 	userStates[userID] = state
 
-	// Show current record details and present edit options
 	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nChoose field to edit:",
 		id, typ, category, amount, state.Description)
-	buttons := [][]tgbotapi.InlineKeyboardButton{
+	buttons := [][]InlineKeyboardButton{
 		{
-			tgbotapi.NewInlineKeyboardButtonData("Edit Type", "edit_field:type"),
-			tgbotapi.NewInlineKeyboardButtonData("Edit Category", "edit_field:category"),
+			{Text: "Edit Type", CallbackData: "edit_field:type"},
+			{Text: "Edit Category", CallbackData: "edit_field:category"},
 		},
 		{
-			tgbotapi.NewInlineKeyboardButtonData("Edit Amount", "edit_field:amount"),
-			tgbotapi.NewInlineKeyboardButtonData("Edit Description", "edit_field:description"),
+			{Text: "Edit Amount", CallbackData: "edit_field:amount"},
+			{Text: "Edit Description", CallbackData: "edit_field:description"},
 		},
 	}
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	keyboard := buildKeyboard(buttons)
 	sendMessageWithKeyboard(chatID, details, keyboard)
 }
 
 // processEditId handles user input for the ID to edit
-func processEditId(message *tgbotapi.Message, state *TransactionState) {
+func processEditId(message *TGMessage, state *TransactionState) {
 	id, err := strconv.ParseInt(strings.TrimSpace(message.Text), 10, 64)
 	if err != nil || id <= 0 {
 		sendMessage(message.Chat.ID, "Invalid ID. Please enter a valid transaction ID number.")
 		return
 	}
 
-	// Check transaction exists
 	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
@@ -594,23 +850,22 @@ func processEditId(message *tgbotapi.Message, state *TransactionState) {
 
 	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nChoose field to edit:",
 		id, typ, category, amount, state.Description)
-	buttons := [][]tgbotapi.InlineKeyboardButton{
+	buttons := [][]InlineKeyboardButton{
 		{
-			tgbotapi.NewInlineKeyboardButtonData("Edit Type", "edit_field:type"),
-			tgbotapi.NewInlineKeyboardButtonData("Edit Category", "edit_field:category"),
+			{Text: "Edit Type", CallbackData: "edit_field:type"},
+			{Text: "Edit Category", CallbackData: "edit_field:category"},
 		},
 		{
-			tgbotapi.NewInlineKeyboardButtonData("Edit Amount", "edit_field:amount"),
-			tgbotapi.NewInlineKeyboardButtonData("Edit Description", "edit_field:description"),
+			{Text: "Edit Amount", CallbackData: "edit_field:amount"},
+			{Text: "Edit Description", CallbackData: "edit_field:description"},
 		},
 	}
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	keyboard := buildKeyboard(buttons)
 	sendMessageWithKeyboard(message.Chat.ID, details, keyboard)
 }
 
 // processEditField handles the callback when user selects which field to edit
-func processEditField(callback *tgbotapi.CallbackQuery, state *TransactionState) {
-	// callback.Data will be like "edit_field:amount"
+func processEditField(callback *CallbackQuery, state *TransactionState) {
 	parts := strings.SplitN(callback.Data, ":", 2)
 	if len(parts) != 2 {
 		sendMessage(callback.Message.Chat.ID, "Invalid selection.")
@@ -620,39 +875,35 @@ func processEditField(callback *tgbotapi.CallbackQuery, state *TransactionState)
 
 	switch field {
 	case "type":
-		// show types (income/expense)
 		state.Step = "SELECT_EDIT_TYPE"
-		// store the message id that contains the keyboard so we can edit it later (remove keyboard / show result)
 		state.PromptMessageID = callback.Message.MessageID
-		buttons := [][]tgbotapi.InlineKeyboardButton{
+		buttons := [][]InlineKeyboardButton{
 			{
-				tgbotapi.NewInlineKeyboardButtonData("Income", "income"),
-				tgbotapi.NewInlineKeyboardButtonData("Expense", "expense"),
+				{Text: "Income", CallbackData: "income"},
+				{Text: "Expense", CallbackData: "expense"},
 			},
 			{
-				tgbotapi.NewInlineKeyboardButtonData("Cancel", "edit_cancel"),
+				{Text: "Cancel", CallbackData: "edit_cancel"},
 			},
 		}
-		keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+		keyboard := buildKeyboard(buttons)
 		editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, "Select new type:", keyboard)
 	case "category":
 		state.Step = "SELECT_EDIT_CATEGORY"
 		state.PromptMessageID = callback.Message.MessageID
-		buttons := make([][]tgbotapi.InlineKeyboardButton, 0)
+		buttons := make([][]InlineKeyboardButton, 0)
 		for _, category := range categories {
-			buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(category, category),
-			))
+			buttons = append(buttons, []InlineKeyboardButton{
+				{Text: category, CallbackData: category},
+			})
 		}
-		// add cancel row
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Cancel", "edit_cancel"),
-		))
-		keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+		buttons = append(buttons, []InlineKeyboardButton{
+			{Text: "Cancel", CallbackData: "edit_cancel"},
+		})
+		keyboard := buildKeyboard(buttons)
 		editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, "Select new category:", keyboard)
 	case "amount":
 		state.Step = "ENTER_EDIT_AMOUNT"
-		// store the message id we edited so we can replace it after user enters value
 		state.PromptMessageID = callback.Message.MessageID
 		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new amount (positive number):")
 	case "description":
@@ -665,19 +916,17 @@ func processEditField(callback *tgbotapi.CallbackQuery, state *TransactionState)
 }
 
 // processEditTransactionType handles callback when user selects new type for edit
-func processEditTransactionType(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+func processEditTransactionType(callback *CallbackQuery, state *TransactionState) {
 	newType := callback.Data
 	chatID := callback.Message.Chat.ID
 	msgID := callback.Message.MessageID
 
-	// handle cancel action
 	if newType == "edit_cancel" {
 		editMessage(chatID, msgID, "Edit canceled.")
 		delete(userStates, state.UserID)
 		return
 	}
 
-	// Update DB
 	_, err := db.Exec("UPDATE transactions SET type = ? WHERE id = ?", newType, state.EditID)
 	if err != nil {
 		log.Printf("Failed to update type: %v", err)
@@ -690,12 +939,11 @@ func processEditTransactionType(callback *tgbotapi.CallbackQuery, state *Transac
 }
 
 // processEditCategory handles callback when user selects new category for edit
-func processEditCategory(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+func processEditCategory(callback *CallbackQuery, state *TransactionState) {
 	newCategory := callback.Data
 	chatID := callback.Message.Chat.ID
 	msgID := callback.Message.MessageID
 
-	// handle cancel action
 	if newCategory == "edit_cancel" {
 		editMessage(chatID, msgID, "Edit canceled.")
 		delete(userStates, state.UserID)
@@ -714,7 +962,7 @@ func processEditCategory(callback *tgbotapi.CallbackQuery, state *TransactionSta
 }
 
 // processEditAmountEdit handles updating amount after user inputs it
-func processEditAmountEdit(message *tgbotapi.Message, state *TransactionState) {
+func processEditAmountEdit(message *TGMessage, state *TransactionState) {
 	amount, err := strconv.ParseFloat(message.Text, 64)
 	if err != nil || amount <= 0 {
 		sendMessage(message.Chat.ID, "Invalid amount. Please enter a positive number.")
@@ -723,7 +971,6 @@ func processEditAmountEdit(message *tgbotapi.Message, state *TransactionState) {
 	_, err = db.Exec("UPDATE transactions SET amount = ? WHERE id = ?", amount, state.EditID)
 	if err != nil {
 		log.Printf("Failed to update amount: %v", err)
-		// try to edit prompt message to show failure and remove keyboard
 		if state.PromptMessageID != 0 {
 			editMessage(message.Chat.ID, state.PromptMessageID, "Failed to update transaction amount.")
 		} else {
@@ -733,11 +980,9 @@ func processEditAmountEdit(message *tgbotapi.Message, state *TransactionState) {
 		return
 	}
 
-	// Edit the prompt message (where keyboard used to be) to show confirmation and remove inline keyboard
 	if state.PromptMessageID != 0 {
 		editMessage(message.Chat.ID, state.PromptMessageID, fmt.Sprintf("Transaction %d updated: amount set to %.2f", state.EditID, amount))
 	} else {
-		// fallback to sending a message if we don't have the prompt id
 		sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: amount set to %.2f", state.EditID, amount))
 	}
 
@@ -745,7 +990,7 @@ func processEditAmountEdit(message *tgbotapi.Message, state *TransactionState) {
 }
 
 // processEditDescriptionEdit handles updating description after user inputs it
-func processEditDescriptionEdit(message *tgbotapi.Message, state *TransactionState) {
+func processEditDescriptionEdit(message *TGMessage, state *TransactionState) {
 	if len(message.Text) > 100 {
 		sendMessage(message.Chat.ID, "Description too long. Please keep it under 100 characters.")
 		return
@@ -787,7 +1032,6 @@ func startDelete(chatID int64, userID int64) {
 
 // startDeleteWithID begins delete flow immediately when ID is already provided
 func startDeleteWithID(chatID int64, userID int64, id int64) {
-	// check if transaction exists
 	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
@@ -821,28 +1065,26 @@ func startDeleteWithID(chatID int64, userID int64, id int64) {
 	}
 	userStates[userID] = state
 
-	// Show current record details and present confirm options
 	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nAre you sure you want to DELETE this transaction?",
 		id, typ, category, amount, state.Description)
-	buttons := [][]tgbotapi.InlineKeyboardButton{
+	buttons := [][]InlineKeyboardButton{
 		{
-			tgbotapi.NewInlineKeyboardButtonData("Confirm Delete", "delete_confirm"),
-			tgbotapi.NewInlineKeyboardButtonData("Cancel", "delete_cancel"),
+			{Text: "Confirm Delete", CallbackData: "delete_confirm"},
+			{Text: "Cancel", CallbackData: "delete_cancel"},
 		},
 	}
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	keyboard := buildKeyboard(buttons)
 	sendMessageWithKeyboard(chatID, details, keyboard)
 }
 
 // processDeleteId handles user input for the ID to delete
-func processDeleteId(message *tgbotapi.Message, state *TransactionState) {
+func processDeleteId(message *TGMessage, state *TransactionState) {
 	id, err := strconv.ParseInt(strings.TrimSpace(message.Text), 10, 64)
 	if err != nil || id <= 0 {
 		sendMessage(message.Chat.ID, "Invalid ID. Please enter a valid transaction ID number.")
 		return
 	}
 
-	// Check transaction exists
 	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
@@ -874,18 +1116,18 @@ func processDeleteId(message *tgbotapi.Message, state *TransactionState) {
 
 	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nAre you sure you want to DELETE this transaction?",
 		id, typ, category, amount, state.Description)
-	buttons := [][]tgbotapi.InlineKeyboardButton{
+	buttons := [][]InlineKeyboardButton{
 		{
-			tgbotapi.NewInlineKeyboardButtonData("Confirm Delete", "delete_confirm"),
-			tgbotapi.NewInlineKeyboardButtonData("Cancel", "delete_cancel"),
+			{Text: "Confirm Delete", CallbackData: "delete_confirm"},
+			{Text: "Cancel", CallbackData: "delete_cancel"},
 		},
 	}
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	keyboard := buildKeyboard(buttons)
 	sendMessageWithKeyboard(message.Chat.ID, details, keyboard)
 }
 
 // processDeleteConfirmation handles callback when user confirms or cancels deletion
-func processDeleteConfirmation(callback *tgbotapi.CallbackQuery, state *TransactionState) {
+func processDeleteConfirmation(callback *CallbackQuery, state *TransactionState) {
 	chatID := callback.Message.Chat.ID
 	msgID := callback.Message.MessageID
 
@@ -894,26 +1136,21 @@ func processDeleteConfirmation(callback *tgbotapi.CallbackQuery, state *Transact
 		res, err := db.Exec("DELETE FROM transactions WHERE id = ?", state.EditID)
 		if err != nil {
 			log.Printf("Failed to delete transaction %d: %v", state.EditID, err)
-			// Edit original message to show failure and remove inline keyboard
 			editMessage(chatID, msgID, fmt.Sprintf("Failed to delete transaction %d.", state.EditID))
 			delete(userStates, state.UserID)
 			return
 		}
 		rowsAffected, _ := res.RowsAffected()
 		if rowsAffected == 0 {
-			// Edit original message to show no-op and remove inline keyboard
 			editMessage(chatID, msgID, fmt.Sprintf("No transaction deleted. ID %d may not exist.", state.EditID))
 		} else {
-			// Edit original message to show success and remove inline keyboard
 			editMessage(chatID, msgID, fmt.Sprintf("Transaction %d has been deleted.", state.EditID))
 		}
 		delete(userStates, state.UserID)
 	case "delete_cancel":
-		// Edit original message to show cancellation and remove inline keyboard
 		editMessage(chatID, msgID, "Deletion canceled.")
 		delete(userStates, state.UserID)
 	default:
-		// Unknown selection — edit to remove keyboard and show note
 		editMessage(chatID, msgID, "Unknown selection. No action taken.")
 	}
 }
