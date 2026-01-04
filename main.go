@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -226,6 +227,45 @@ func (b *BotClient) SendPhoto(chatID int64, photoPath string, caption string) (*
 		return nil, err
 	}
 	file, err := os.Open(photoPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if _, err := io.Copy(fw, file); err != nil {
+		return nil, err
+	}
+	w.Close()
+
+	returned, err := b.apiPost(url[len(b.baseURL)+1:], &buf, w.FormDataContentType())
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		OK     bool       `json:"ok"`
+		Result *TGMessage `json:"result"`
+	}
+	if err := json.Unmarshal(returned, &result); err != nil {
+		return nil, err
+	}
+	return result.Result, nil
+}
+
+// SendDocument uploads a local file (documentPath) and sends it to chatID with optional caption
+func (b *BotClient) SendDocument(chatID int64, documentPath string, caption string) (*TGMessage, error) {
+	url := b.baseURL + "/sendDocument"
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	_ = w.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if caption != "" {
+		_ = w.WriteField("caption", caption)
+	}
+
+	fw, err := w.CreateFormFile("document", filepath.Base(documentPath))
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(documentPath)
 	if err != nil {
 		return nil, err
 	}
@@ -499,6 +539,8 @@ func handleMessage(message *TGMessage) {
 		} else {
 			startDelete(message.Chat.ID, userID)
 		}
+	case "export_csv", "export":
+		exportCSV(message.Chat.ID)
 	default:
 		if state, exists := userStates[userID]; exists {
 			switch state.Step {
@@ -743,6 +785,86 @@ func get_weekly_expense_piechart(chatID int64) {
 	// If script prints something useful, send it
 	if len(output) > 0 {
 		sendMessage(chatID, string(output))
+	}
+}
+
+// exportCSV exports transactions table to a CSV file and sends it to chatID
+func exportCSV(chatID int64) {
+	rows, err := db.Query("SELECT id, type, category, amount, description, created_at FROM transactions ORDER BY id")
+	if err != nil {
+		sendMessage(chatID, "Failed to query transactions for export.")
+		log.Printf("Database query error for export: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	tmpFile, err := os.CreateTemp("", "transactions-*.csv")
+	if err != nil {
+		sendMessage(chatID, "Failed to create temporary file for export.")
+		log.Printf("Temp file creation error: %v", err)
+		return
+	}
+	tmpPath := tmpFile.Name()
+	// Ensure cleanup
+	defer func() {
+		tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	writer := csv.NewWriter(tmpFile)
+	// write header
+	if err := writer.Write([]string{"id", "type", "category", "amount", "description", "created_at"}); err != nil {
+		sendMessage(chatID, "Failed to write CSV header.")
+		log.Printf("CSV write header error: %v", err)
+		return
+	}
+
+	for rows.Next() {
+		var (
+			id          int64
+			typ         string
+			category    string
+			amount      float64
+			description sql.NullString
+			createdAt   string
+		)
+		if err := rows.Scan(&id, &typ, &category, &amount, &description, &createdAt); err != nil {
+			log.Printf("Row scan error while exporting CSV: %v", err)
+			continue
+		}
+		desc := ""
+		if description.Valid {
+			desc = description.String
+		}
+		record := []string{
+			strconv.FormatInt(id, 10),
+			typ,
+			category,
+			fmt.Sprintf("%.2f", amount),
+			desc,
+			createdAt,
+		}
+		if err := writer.Write(record); err != nil {
+			log.Printf("CSV write row error: %v", err)
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		sendMessage(chatID, "Failed to finalize CSV export.")
+		log.Printf("CSV writer error: %v", err)
+		return
+	}
+
+	// Close before sending
+	if err := tmpFile.Close(); err != nil {
+		log.Printf("Error closing temp file before send: %v", err)
+	}
+
+	_, err = botClient.SendDocument(chatID, tmpPath, "Transactions export (CSV)")
+	if err != nil {
+		sendMessage(chatID, "Failed to send CSV file.")
+		log.Printf("Failed to send CSV file: %v", err)
+		return
 	}
 }
 
