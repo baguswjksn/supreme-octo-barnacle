@@ -31,11 +31,19 @@ type Update struct {
 }
 
 type TGMessage struct {
-	MessageID int     `json:"message_id"`
-	From      *TGUser `json:"from,omitempty"`
-	Chat      *TGChat `json:"chat,omitempty"`
-	Text      string  `json:"text,omitempty"`
-	Date      int64   `json:"date,omitempty"`
+	MessageID int         `json:"message_id"`
+	From      *TGUser     `json:"from,omitempty"`
+	Chat      *TGChat     `json:"chat,omitempty"`
+	Text      string      `json:"text,omitempty"`
+	Date      int64       `json:"date,omitempty"`
+	Document  *TGDocument `json:"document,omitempty"`
+}
+
+type TGDocument struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	FileSize int    `json:"file_size,omitempty"`
 }
 
 type TGUser struct {
@@ -134,6 +142,54 @@ func (b *BotClient) apiGet(path string, params map[string]string) ([]byte, error
 	}
 	defer resp.Body.Close()
 	return io.ReadAll(resp.Body)
+}
+
+// DownloadFile downloads a Telegram file (by file_id) to a temporary local file.
+// Returns the path to the temp file (caller should remove it when done).
+func (b *BotClient) DownloadFile(fileID string) (string, error) {
+	// Call getFile to obtain file_path
+	data, err := b.apiGet("getFile", map[string]string{"file_id": fileID})
+	if err != nil {
+		return "", fmt.Errorf("getFile failed: %w", err)
+	}
+	var gf struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FileID   string `json:"file_id"`
+			FileSize int    `json:"file_size"`
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &gf); err != nil {
+		return "", fmt.Errorf("failed to parse getFile response: %w", err)
+	}
+	if gf.Result.FilePath == "" {
+		return "", fmt.Errorf("file_path not present in getFile response")
+	}
+
+	downloadURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.token, gf.Result.FilePath)
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download file from %s: %w", downloadURL, err)
+	}
+	defer resp.Body.Close()
+
+	ext := filepath.Ext(gf.Result.FilePath)
+	if ext == "" {
+		ext = ".bin"
+	}
+	tmpFile, err := os.CreateTemp("", "tgfile-*"+ext)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer tmpFile.Close()
+
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		_ = os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("failed to write file to temp: %w", err)
+	}
+
+	return tmpFile.Name(), nil
 }
 
 func (b *BotClient) GetUpdates(offset int, timeout int) ([]Update, error) {
@@ -492,6 +548,12 @@ func handleMessage(message *TGMessage) {
 		return
 	}
 
+	// If document is present, handle document upload flow first
+	if message.Document != nil {
+		handleDocument(message)
+		return
+	}
+
 	// Detect commands: Telegram sends text like "/add" in message.Text
 	text := strings.TrimSpace(message.Text)
 	command := ""
@@ -541,6 +603,8 @@ func handleMessage(message *TGMessage) {
 		}
 	case "export_csv", "export":
 		exportCSV(message.Chat.ID)
+	case "bulk_transactions":
+		startBulkTransactions(message.Chat.ID, userID)
 	default:
 		if state, exists := userStates[userID]; exists {
 			switch state.Step {
@@ -556,6 +620,14 @@ func handleMessage(message *TGMessage) {
 				processEditDescriptionEdit(message, state)
 			case "ENTER_DELETE_ID":
 				processDeleteId(message, state)
+			case "AWAIT_CSV":
+				// If the user typed something while awaiting CSV, allow text "cancel"
+				if strings.ToLower(strings.TrimSpace(message.Text)) == "cancel" {
+					delete(userStates, userID)
+					sendMessage(message.Chat.ID, "Bulk import canceled.")
+					return
+				}
+				sendMessage(message.Chat.ID, "Awaiting CSV file. Please send it as a document, or send 'cancel' to abort.")
 			default:
 				sendMessage(message.Chat.ID, "I don't understand that command.")
 			}
@@ -615,6 +687,82 @@ func startTransaction(chatID int64, userID int64) {
 	}
 	keyboard := buildKeyboard(buttons)
 	sendMessageWithKeyboard(chatID, "Please choose the type of transaction:", keyboard)
+}
+
+// startBulkTransactions starts the two-step flow for CSV upload via Telegram.
+// User will be prompted to send the CSV file as a document.
+func startBulkTransactions(chatID int64, userID int64) {
+	state := &TransactionState{
+		UserID: userID,
+		Step:   "AWAIT_CSV",
+	}
+	userStates[userID] = state
+	sendMessage(chatID, "Please send the CSV file as a document now. Expected CSV columns: type,category,amount,description (optional),created_at (optional). Send 'cancel' to abort.")
+}
+
+// handleDocument handles incoming document messages: used for bulk CSV import
+func handleDocument(message *TGMessage) {
+	if message.From == nil || message.Chat == nil || message.Document == nil {
+		return
+	}
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	if userID != ALLOWED_USER_ID {
+		sendMessage(chatID, "You are not authorized to use this bot.")
+		return
+	}
+
+	state, exists := userStates[userID]
+	if !exists || state.Step != "AWAIT_CSV" {
+		sendMessage(chatID, "No bulk import in progress. Start with /bulk_transactions")
+		return
+	}
+
+	// Basic check: prefer file name extension, fallback to mime type
+	lowerName := strings.ToLower(message.Document.FileName)
+	if lowerName == "" {
+		lowerName = strings.ToLower(message.Document.MimeType)
+	}
+	if !strings.Contains(lowerName, "csv") && !strings.HasSuffix(lowerName, ".csv") {
+		sendMessage(chatID, "Please upload a CSV file (filename must end with .csv or mime type should indicate CSV).")
+		return
+	}
+
+	// Download file
+	tmpPath, err := botClient.DownloadFile(message.Document.FileID)
+	if err != nil {
+		log.Printf("Failed to download document: %v", err)
+		sendMessage(chatID, "Failed to download the uploaded file. See server logs.")
+		delete(userStates, userID)
+		return
+	}
+	// Ensure cleanup
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+
+	sendMessage(chatID, "File received. Processing...")
+
+	// Run import
+	inserted, errs := bulkInsertFromCSV(tmpPath)
+
+	if len(errs) == 0 {
+		sendMessage(chatID, fmt.Sprintf("Import complete: %d rows inserted.", inserted))
+	} else {
+		sendMessage(chatID, fmt.Sprintf("Import finished: %d rows inserted. There were %d errors (see server logs).", inserted, len(errs)))
+		for _, e := range errs {
+			log.Printf("CSV import error: %v", e)
+		}
+	}
+
+	// refresh categories cache (in case new categories were inserted)
+	if cats, err := loadCategories(db); err == nil {
+		categories = cats
+	}
+
+	// Clear state
+	delete(userStates, userID)
 }
 
 func processTransactionType(callback *CallbackQuery, state *TransactionState) {
@@ -866,6 +1014,136 @@ func exportCSV(chatID int64) {
 		log.Printf("Failed to send CSV file: %v", err)
 		return
 	}
+}
+
+/*
+	Bulk CSV import: read CSV file and insert rows into the DB.
+	Expected CSV columns (in order):
+	type, category, amount, description (optional), created_at (optional)
+
+	If the first row looks like a header (contains "type" and "amount"), it will be skipped.
+	created_at supports RFC3339, "2006-01-02 15:04:05", or "2006-01-02".
+	Category names that don't exist will be added to categories table.
+*/
+
+// bulkInsertFromCSV reads CSV file at filePath and inserts rows into the DB.
+// Returns number of successfully inserted rows and a slice of errors encountered per row.
+func bulkInsertFromCSV(filePath string) (int, []error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return 0, []error{fmt.Errorf("failed to open file: %w", err)}
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	r.FieldsPerRecord = -1 // allow variable number of fields per row
+
+	rows, err := r.ReadAll()
+	if err != nil {
+		return 0, []error{fmt.Errorf("failed to read CSV: %w", err)}
+	}
+
+	startIdx := 0
+	if len(rows) > 0 {
+		firstLower := strings.ToLower(strings.Join(rows[0], ","))
+		if strings.Contains(firstLower, "type") && strings.Contains(firstLower, "amount") {
+			startIdx = 1 // skip header
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, []error{fmt.Errorf("failed to begin transaction: %w", err)}
+	}
+	// Ensure we rollback on error if commit doesn't happen
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	stmtInsert, err := tx.Prepare("INSERT INTO transactions (type, category, amount, description, created_at) VALUES (?, ?, ?, ?, ?)")
+	if err != nil {
+		return 0, []error{fmt.Errorf("failed to prepare insert statement: %w", err)}
+	}
+	defer stmtInsert.Close()
+
+	stmtCat, err := tx.Prepare("INSERT OR IGNORE INTO categories (name) VALUES (?)")
+	if err != nil {
+		return 0, []error{fmt.Errorf("failed to prepare category statement: %w", err)}
+	}
+	defer stmtCat.Close()
+
+	inserted := 0
+	var errs []error
+	for i := startIdx; i < len(rows); i++ {
+		row := rows[i]
+		// Expect at least 3 columns: type, category, amount
+		if len(row) < 3 {
+			errs = append(errs, fmt.Errorf("row %d: not enough columns (need at least type, category, amount)", i+1))
+			continue
+		}
+		typ := strings.ToLower(strings.TrimSpace(row[0]))
+		category := strings.TrimSpace(row[1])
+		amountStr := strings.TrimSpace(row[2])
+		desc := ""
+		createdAtStr := ""
+		if len(row) > 3 {
+			desc = strings.TrimSpace(row[3])
+		}
+		if len(row) > 4 {
+			createdAtStr = strings.TrimSpace(row[4])
+		}
+
+		if typ != "income" && typ != "expense" {
+			errs = append(errs, fmt.Errorf("row %d: invalid type '%s' (must be 'income' or 'expense')", i+1, row[0]))
+			continue
+		}
+		amount, err := strconv.ParseFloat(amountStr, 64)
+		if err != nil || amount <= 0 {
+			errs = append(errs, fmt.Errorf("row %d: invalid amount '%s'", i+1, amountStr))
+			continue
+		}
+		if category == "" {
+			category = "Uncategorized"
+		}
+
+		// ensure category exists
+		if _, err := stmtCat.Exec(category); err != nil {
+			// log but continue; failure to insert category shouldn't block row insertion
+			log.Printf("failed to ensure category %s: %v", category, err)
+		}
+
+		// parse createdAt if provided
+		var createdAt time.Time
+		if createdAtStr == "" {
+			createdAt = time.Now().In(time.FixedZone("GMT+7", 7*60*60))
+		} else {
+			layouts := []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02"}
+			var pErr error
+			for _, lay := range layouts {
+				createdAt, pErr = time.Parse(lay, createdAtStr)
+				if pErr == nil {
+					break
+				}
+			}
+			if createdAt.IsZero() {
+				// fallback to now in GMT+7
+				createdAt = time.Now().In(time.FixedZone("GMT+7", 7*60*60))
+			}
+		}
+
+		if _, err := stmtInsert.Exec(typ, category, amount, desc, createdAt.Format("2006-01-02 15:04:05")); err != nil {
+			errs = append(errs, fmt.Errorf("row %d: db insert error: %v", i+1, err))
+			continue
+		}
+		inserted++
+	}
+
+	if err := tx.Commit(); err != nil {
+		errs = append(errs, fmt.Errorf("failed to commit transaction: %w", err))
+		return inserted, errs
+	}
+
+	return inserted, errs
 }
 
 /*
