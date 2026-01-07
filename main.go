@@ -362,9 +362,11 @@ type TransactionState struct {
 	TransactionType string // "income" or "expense"
 	Category        string
 	Amount          float64
+	Quantity        float64
 	Description     string
 	EditID          int64 // ID of transaction being edited/deleted
 	PromptMessageID int   // message id that was edited to prompt user (used to remove keyboard / show confirmation)
+	IsOutlier       bool
 }
 
 var userStates = make(map[int64]*TransactionState)
@@ -471,9 +473,11 @@ func initDB(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			type TEXT NOT NULL,
 			category TEXT NOT NULL,
+			quantity REAL NOT NULL DEFAULT 1,
 			amount REAL NOT NULL,
 			description TEXT,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			is_outlier BOOLEAN
 		)`,
 	}
 
@@ -628,6 +632,8 @@ func handleMessage(message *TGMessage) {
 					return
 				}
 				sendMessage(message.Chat.ID, "Awaiting CSV file. Please send it as a document, or send 'cancel' to abort.")
+			case "ENTER_EDIT_QUANTITY":
+				processEditQuantityEdit(message, state)
 			default:
 				sendMessage(message.Chat.ID, "I don't understand that command.")
 			}
@@ -665,6 +671,8 @@ func handleCallbackQuery(callback *CallbackQuery) {
 		processEditTransactionType(callback, state)
 	case "SELECT_EDIT_CATEGORY":
 		processEditCategory(callback, state)
+	case "SELECT_EDIT_IS_OUTLIER":
+		processEditIsOutlier(callback, state)
 	case "CONFIRM_DELETE":
 		processDeleteConfirmation(callback, state)
 	default:
@@ -674,8 +682,9 @@ func handleCallbackQuery(callback *CallbackQuery) {
 
 func startTransaction(chatID int64, userID int64) {
 	state := &TransactionState{
-		UserID: userID,
-		Step:   "SELECT_TYPE",
+		UserID:   userID,
+		Step:     "SELECT_TYPE",
+		Quantity: 1,
 	}
 	userStates[userID] = state
 
@@ -697,7 +706,7 @@ func startBulkTransactions(chatID int64, userID int64) {
 		Step:   "AWAIT_CSV",
 	}
 	userStates[userID] = state
-	sendMessage(chatID, "Please send the CSV file as a document now. Expected CSV columns: type,category,amount,description (optional),created_at (optional). Send 'cancel' to abort.")
+	sendMessage(chatID, "Please send the CSV file as a document now. Supported CSV columns (header-based) include: type,category,quantity,amount,description,created_at,is_outlier. Legacy positional files (type,category,amount,description,created_at) are also supported. Send 'cancel' to abort.")
 }
 
 // handleDocument handles incoming document messages: used for bulk CSV import
@@ -809,7 +818,7 @@ func processDescription(message *TGMessage, state *TransactionState) {
 	// Get current time in GMT+7
 	currentTime := time.Now().In(time.FixedZone("GMT+7", 7*60*60))
 
-	stmt, err := db.Prepare("INSERT INTO transactions (type, category, amount, description, created_at) VALUES (?, ?, ?, ?, ?)")
+	stmt, err := db.Prepare("INSERT INTO transactions (type, category, quantity, amount, description, created_at, is_outlier) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		sendMessage(message.Chat.ID, "Failed to prepare transaction.")
 		log.Printf("Database prepare error: %v", err)
@@ -817,7 +826,16 @@ func processDescription(message *TGMessage, state *TransactionState) {
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(state.TransactionType, state.Category, state.Amount, state.Description, currentTime.Format("2006-01-02 15:04:05"))
+	quantity := state.Quantity
+	if quantity == 0 {
+		quantity = 1
+	}
+	isOutlierVal := 0
+	if state.IsOutlier {
+		isOutlierVal = 1
+	}
+
+	_, err = stmt.Exec(state.TransactionType, state.Category, quantity, state.Amount, state.Description, currentTime.Format("2006-01-02 15:04:05"), isOutlierVal)
 	if err != nil {
 		sendMessage(message.Chat.ID, "Failed to save transaction.")
 		log.Printf("Database exec error: %v", err)
@@ -938,7 +956,7 @@ func get_weekly_expense_piechart(chatID int64) {
 
 // exportCSV exports transactions table to a CSV file and sends it to chatID
 func exportCSV(chatID int64) {
-	rows, err := db.Query("SELECT id, type, category, amount, description, created_at FROM transactions ORDER BY id")
+	rows, err := db.Query("SELECT id, type, category, quantity, amount, description, created_at, is_outlier FROM transactions ORDER BY id")
 	if err != nil {
 		sendMessage(chatID, "Failed to query transactions for export.")
 		log.Printf("Database query error for export: %v", err)
@@ -961,7 +979,7 @@ func exportCSV(chatID int64) {
 
 	writer := csv.NewWriter(tmpFile)
 	// write header
-	if err := writer.Write([]string{"id", "type", "category", "amount", "description", "created_at"}); err != nil {
+	if err := writer.Write([]string{"id", "type", "category", "quantity", "amount", "description", "created_at", "is_outlier"}); err != nil {
 		sendMessage(chatID, "Failed to write CSV header.")
 		log.Printf("CSV write header error: %v", err)
 		return
@@ -972,11 +990,13 @@ func exportCSV(chatID int64) {
 			id          int64
 			typ         string
 			category    string
+			quantity    float64
 			amount      float64
 			description sql.NullString
 			createdAt   string
+			isOutlier   sql.NullBool
 		)
-		if err := rows.Scan(&id, &typ, &category, &amount, &description, &createdAt); err != nil {
+		if err := rows.Scan(&id, &typ, &category, &quantity, &amount, &description, &createdAt, &isOutlier); err != nil {
 			log.Printf("Row scan error while exporting CSV: %v", err)
 			continue
 		}
@@ -984,13 +1004,21 @@ func exportCSV(chatID int64) {
 		if description.Valid {
 			desc = description.String
 		}
+		outlierStr := ""
+		if isOutlier.Valid && isOutlier.Bool {
+			outlierStr = "true"
+		} else if isOutlier.Valid && !isOutlier.Bool {
+			outlierStr = "false"
+		}
 		record := []string{
 			strconv.FormatInt(id, 10),
 			typ,
 			category,
+			fmt.Sprintf("%.2f", quantity),
 			fmt.Sprintf("%.2f", amount),
 			desc,
 			createdAt,
+			outlierStr,
 		}
 		if err := writer.Write(record); err != nil {
 			log.Printf("CSV write row error: %v", err)
@@ -1018,10 +1046,12 @@ func exportCSV(chatID int64) {
 
 /*
 	Bulk CSV import: read CSV file and insert rows into the DB.
-	Expected CSV columns (in order):
-	type, category, amount, description (optional), created_at (optional)
+	Supported CSV columns (header-based):
+	type, category, quantity, amount, description (optional), created_at (optional), is_outlier (optional)
 
-	If the first row looks like a header (contains "type" and "amount"), it will be skipped.
+	Legacy positional format supported (no header):
+	type,category,amount,description (optional),created_at (optional)
+
 	created_at supports RFC3339, "2006-01-02 15:04:05", or "2006-01-02".
 	Category names that don't exist will be added to categories table.
 */
@@ -1044,10 +1074,17 @@ func bulkInsertFromCSV(filePath string) (int, []error) {
 	}
 
 	startIdx := 0
+	hasHeader := false
+	var headerMap map[string]int
 	if len(rows) > 0 {
 		firstLower := strings.ToLower(strings.Join(rows[0], ","))
 		if strings.Contains(firstLower, "type") && strings.Contains(firstLower, "amount") {
 			startIdx = 1 // skip header
+			hasHeader = true
+			headerMap = make(map[string]int)
+			for i, h := range rows[0] {
+				headerMap[strings.ToLower(strings.TrimSpace(h))] = i
+			}
 		}
 	}
 
@@ -1060,7 +1097,7 @@ func bulkInsertFromCSV(filePath string) (int, []error) {
 		_ = tx.Rollback()
 	}()
 
-	stmtInsert, err := tx.Prepare("INSERT INTO transactions (type, category, amount, description, created_at) VALUES (?, ?, ?, ?, ?)")
+	stmtInsert, err := tx.Prepare("INSERT INTO transactions (type, category, quantity, amount, description, created_at, is_outlier) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return 0, []error{fmt.Errorf("failed to prepare insert statement: %w", err)}
 	}
@@ -1076,21 +1113,82 @@ func bulkInsertFromCSV(filePath string) (int, []error) {
 	var errs []error
 	for i := startIdx; i < len(rows); i++ {
 		row := rows[i]
-		// Expect at least 3 columns: type, category, amount
+		// Expect at least 3 columns: type, category, amount (legacy) or type,category,quantity,amount (new)
 		if len(row) < 3 {
 			errs = append(errs, fmt.Errorf("row %d: not enough columns (need at least type, category, amount)", i+1))
 			continue
 		}
-		typ := strings.ToLower(strings.TrimSpace(row[0]))
-		category := strings.TrimSpace(row[1])
-		amountStr := strings.TrimSpace(row[2])
-		desc := ""
-		createdAtStr := ""
-		if len(row) > 3 {
-			desc = strings.TrimSpace(row[3])
-		}
-		if len(row) > 4 {
-			createdAtStr = strings.TrimSpace(row[4])
+
+		var typ, category, amountStr, desc, createdAtStr, quantityStr, isOutlierStr string
+		var quantity float64 = 1
+		var isOutlier bool = false
+
+		if hasHeader {
+			// use header map to obtain values
+			get := func(name string) string {
+				if idx, ok := headerMap[name]; ok && idx < len(row) {
+					return strings.TrimSpace(row[idx])
+				}
+				return ""
+			}
+			typ = strings.ToLower(get("type"))
+			category = get("category")
+			quantityStr = get("quantity")
+			amountStr = get("amount")
+			desc = get("description")
+			createdAtStr = get("created_at")
+			isOutlierStr = get("is_outlier")
+			if quantityStr != "" {
+				if q, err := strconv.ParseFloat(quantityStr, 64); err == nil {
+					quantity = q
+				}
+			}
+			if isOutlierStr != "" {
+				isOutlier = parseBool(isOutlierStr)
+			}
+		} else {
+			// No header: support legacy and new positional formats
+			typ = strings.ToLower(strings.TrimSpace(row[0]))
+			category = strings.TrimSpace(row[1])
+
+			// Try to detect if row[2] is quantity or amount:
+			// If row has >=4 columns and row[3] parses as float, assume row[2]=quantity, row[3]=amount.
+			if len(row) >= 4 {
+				if _, errA := strconv.ParseFloat(strings.TrimSpace(row[3]), 64); errA == nil {
+					// treat as quantity + amount
+					quantityStr = strings.TrimSpace(row[2])
+					amountStr = strings.TrimSpace(row[3])
+					if q, err := strconv.ParseFloat(quantityStr, 64); err == nil {
+						quantity = q
+					}
+					if len(row) > 4 {
+						desc = strings.TrimSpace(row[4])
+					}
+					if len(row) > 5 {
+						createdAtStr = strings.TrimSpace(row[5])
+					}
+					if len(row) > 6 {
+						isOutlierStr = strings.TrimSpace(row[6])
+						isOutlier = parseBool(isOutlierStr)
+					}
+				} else {
+					// treat as legacy: amount at row[2]
+					amountStr = strings.TrimSpace(row[2])
+					if len(row) > 3 {
+						desc = strings.TrimSpace(row[3])
+					}
+					if len(row) > 4 {
+						createdAtStr = strings.TrimSpace(row[4])
+					}
+					if len(row) > 5 {
+						isOutlierStr = strings.TrimSpace(row[5])
+						isOutlier = parseBool(isOutlierStr)
+					}
+				}
+			} else {
+				// Only three columns: assume amount is row[2]
+				amountStr = strings.TrimSpace(row[2])
+			}
 		}
 
 		if typ != "income" && typ != "expense" {
@@ -1131,7 +1229,12 @@ func bulkInsertFromCSV(filePath string) (int, []error) {
 			}
 		}
 
-		if _, err := stmtInsert.Exec(typ, category, amount, desc, createdAt.Format("2006-01-02 15:04:05")); err != nil {
+		isOutlierVal := 0
+		if isOutlier {
+			isOutlierVal = 1
+		}
+
+		if _, err := stmtInsert.Exec(typ, category, quantity, amount, desc, createdAt.Format("2006-01-02 15:04:05"), isOutlierVal); err != nil {
 			errs = append(errs, fmt.Errorf("row %d: db insert error: %v", i+1, err))
 			continue
 		}
@@ -1144,6 +1247,15 @@ func bulkInsertFromCSV(filePath string) (int, []error) {
 	}
 
 	return inserted, errs
+}
+
+func parseBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "y", "t":
+		return true
+	default:
+		return false
+	}
 }
 
 /*
@@ -1162,16 +1274,18 @@ func startEdit(chatID int64, userID int64) {
 
 // startEditWithID begins edit flow immediately when ID is already provided
 func startEditWithID(chatID int64, userID int64, id int64) {
-	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	row := db.QueryRow("SELECT id, type, category, quantity, amount, description, created_at, is_outlier FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
 		typ         string
 		category    string
+		quantity    float64
 		amount      float64
 		description sql.NullString
 		createdAt   string
+		isOutlier   sql.NullBool
 	)
-	err := row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	err := row.Scan(&rid, &typ, &category, &quantity, &amount, &description, &createdAt, &isOutlier)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			sendMessage(chatID, fmt.Sprintf("Transaction with ID %d not found.", id))
@@ -1187,16 +1301,20 @@ func startEditWithID(chatID int64, userID int64, id int64) {
 		Step:            "SELECT_EDIT_FIELD",
 		EditID:          id,
 		TransactionType: typ,
-		Category:         category,
-		Amount:           amount,
+		Category:        category,
+		Amount:          amount,
+		Quantity:        quantity,
 	}
 	if description.Valid {
 		state.Description = description.String
 	}
+	if isOutlier.Valid {
+		state.IsOutlier = isOutlier.Bool
+	}
 	userStates[userID] = state
 
-	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nChoose field to edit:",
-		id, typ, category, amount, state.Description)
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nQuantity: %.2f\nAmount: %.2f\nDescription: %s\nIs Outlier: %v\n\nChoose field to edit:",
+		id, typ, category, quantity, amount, state.Description, state.IsOutlier)
 	buttons := [][]InlineKeyboardButton{
 		{
 			{Text: "Edit Type", CallbackData: "edit_field:type"},
@@ -1204,7 +1322,11 @@ func startEditWithID(chatID int64, userID int64, id int64) {
 		},
 		{
 			{Text: "Edit Amount", CallbackData: "edit_field:amount"},
+			{Text: "Edit Quantity", CallbackData: "edit_field:quantity"},
+		},
+		{
 			{Text: "Edit Description", CallbackData: "edit_field:description"},
+			{Text: "Toggle Outlier", CallbackData: "edit_field:is_outlier"},
 		},
 	}
 	keyboard := buildKeyboard(buttons)
@@ -1219,16 +1341,18 @@ func processEditId(message *TGMessage, state *TransactionState) {
 		return
 	}
 
-	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	row := db.QueryRow("SELECT id, type, category, quantity, amount, description, created_at, is_outlier FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
 		typ         string
 		category    string
+		quantity    float64
 		amount      float64
 		description sql.NullString
 		createdAt   string
+		isOutlier   sql.NullBool
 	)
-	err = row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	err = row.Scan(&rid, &typ, &category, &quantity, &amount, &description, &createdAt, &isOutlier)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			sendMessage(message.Chat.ID, fmt.Sprintf("Transaction with ID %d not found.", id))
@@ -1243,13 +1367,17 @@ func processEditId(message *TGMessage, state *TransactionState) {
 	state.TransactionType = typ
 	state.Category = category
 	state.Amount = amount
+	state.Quantity = quantity
 	if description.Valid {
 		state.Description = description.String
 	}
+	if isOutlier.Valid {
+		state.IsOutlier = isOutlier.Bool
+	}
 	state.Step = "SELECT_EDIT_FIELD"
 
-	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nChoose field to edit:",
-		id, typ, category, amount, state.Description)
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nQuantity: %.2f\nAmount: %.2f\nDescription: %s\nIs Outlier: %v\n\nChoose field to edit:",
+		id, typ, category, quantity, amount, state.Description, state.IsOutlier)
 	buttons := [][]InlineKeyboardButton{
 		{
 			{Text: "Edit Type", CallbackData: "edit_field:type"},
@@ -1257,7 +1385,11 @@ func processEditId(message *TGMessage, state *TransactionState) {
 		},
 		{
 			{Text: "Edit Amount", CallbackData: "edit_field:amount"},
+			{Text: "Edit Quantity", CallbackData: "edit_field:quantity"},
+		},
+		{
 			{Text: "Edit Description", CallbackData: "edit_field:description"},
+			{Text: "Toggle Outlier", CallbackData: "edit_field:is_outlier"},
 		},
 	}
 	keyboard := buildKeyboard(buttons)
@@ -1306,10 +1438,28 @@ func processEditField(callback *CallbackQuery, state *TransactionState) {
 		state.Step = "ENTER_EDIT_AMOUNT"
 		state.PromptMessageID = callback.Message.MessageID
 		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new amount (positive number):")
+	case "quantity":
+		state.Step = "ENTER_EDIT_QUANTITY"
+		state.PromptMessageID = callback.Message.MessageID
+		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new quantity (positive number):")
 	case "description":
 		state.Step = "ENTER_EDIT_DESCRIPTION"
 		state.PromptMessageID = callback.Message.MessageID
 		editMessage(callback.Message.Chat.ID, callback.Message.MessageID, "Enter new description (max 100 characters):")
+	case "is_outlier":
+		state.Step = "SELECT_EDIT_IS_OUTLIER"
+		state.PromptMessageID = callback.Message.MessageID
+		buttons := [][]InlineKeyboardButton{
+			{
+				{Text: "Yes", CallbackData: "is_outlier:true"},
+				{Text: "No", CallbackData: "is_outlier:false"},
+			},
+			{
+				{Text: "Cancel", CallbackData: "edit_cancel"},
+			},
+		}
+		keyboard := buildKeyboard(buttons)
+		editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, "Mark as outlier?", keyboard)
 	default:
 		sendMessage(callback.Message.Chat.ID, "Unknown field selected.")
 	}
@@ -1389,6 +1539,34 @@ func processEditAmountEdit(message *TGMessage, state *TransactionState) {
 	delete(userStates, state.UserID)
 }
 
+// processEditQuantityEdit handles updating quantity after user inputs it
+func processEditQuantityEdit(message *TGMessage, state *TransactionState) {
+	quantity, err := strconv.ParseFloat(message.Text, 64)
+	if err != nil || quantity <= 0 {
+		sendMessage(message.Chat.ID, "Invalid quantity. Please enter a positive number.")
+		return
+	}
+	_, err = db.Exec("UPDATE transactions SET quantity = ? WHERE id = ?", quantity, state.EditID)
+	if err != nil {
+		log.Printf("Failed to update quantity: %v", err)
+		if state.PromptMessageID != 0 {
+			editMessage(message.Chat.ID, state.PromptMessageID, "Failed to update transaction quantity.")
+		} else {
+			sendMessage(message.Chat.ID, "Failed to update transaction quantity.")
+		}
+		delete(userStates, state.UserID)
+		return
+	}
+
+	if state.PromptMessageID != 0 {
+		editMessage(message.Chat.ID, state.PromptMessageID, fmt.Sprintf("Transaction %d updated: quantity set to %.2f", state.EditID, quantity))
+	} else {
+		sendMessage(message.Chat.ID, fmt.Sprintf("Transaction %d updated: quantity set to %.2f", state.EditID, quantity))
+	}
+
+	delete(userStates, state.UserID)
+}
+
 // processEditDescriptionEdit handles updating description after user inputs it
 func processEditDescriptionEdit(message *TGMessage, state *TransactionState) {
 	if len(message.Text) > 100 {
@@ -1416,6 +1594,43 @@ func processEditDescriptionEdit(message *TGMessage, state *TransactionState) {
 	delete(userStates, state.UserID)
 }
 
+// processEditIsOutlier handles callback to set/unset is_outlier
+func processEditIsOutlier(callback *CallbackQuery, state *TransactionState) {
+	data := callback.Data
+	chatID := callback.Message.Chat.ID
+	msgID := callback.Message.MessageID
+
+	if data == "edit_cancel" {
+		editMessage(chatID, msgID, "Edit canceled.")
+		delete(userStates, state.UserID)
+		return
+	}
+
+	parts := strings.SplitN(data, ":", 2)
+	if len(parts) != 2 || parts[0] != "is_outlier" {
+		editMessage(chatID, msgID, "Invalid selection.")
+		delete(userStates, state.UserID)
+		return
+	}
+	val := parts[1]
+	var outlierVal int
+	if val == "true" || val == "1" {
+		outlierVal = 1
+	} else {
+		outlierVal = 0
+	}
+
+	_, err := db.Exec("UPDATE transactions SET is_outlier = ? WHERE id = ?", outlierVal, state.EditID)
+	if err != nil {
+		log.Printf("Failed to update is_outlier: %v", err)
+		editMessage(chatID, msgID, "Failed to update transaction outlier flag.")
+		delete(userStates, state.UserID)
+		return
+	}
+	editMessage(chatID, msgID, fmt.Sprintf("Transaction %d updated: is_outlier set to %v", state.EditID, outlierVal == 1))
+	delete(userStates, state.UserID)
+}
+
 /*
 	DELETE feature with confirmation
 */
@@ -1432,16 +1647,18 @@ func startDelete(chatID int64, userID int64) {
 
 // startDeleteWithID begins delete flow immediately when ID is already provided
 func startDeleteWithID(chatID int64, userID int64, id int64) {
-	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	row := db.QueryRow("SELECT id, type, category, quantity, amount, description, created_at, is_outlier FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
 		typ         string
 		category    string
+		quantity    float64
 		amount      float64
 		description sql.NullString
 		createdAt   string
+		isOutlier   sql.NullBool
 	)
-	err := row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	err := row.Scan(&rid, &typ, &category, &quantity, &amount, &description, &createdAt, &isOutlier)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			sendMessage(chatID, fmt.Sprintf("Transaction with ID %d not found.", id))
@@ -1459,14 +1676,18 @@ func startDeleteWithID(chatID int64, userID int64, id int64) {
 		TransactionType: typ,
 		Category:        category,
 		Amount:          amount,
+		Quantity:        quantity,
 	}
 	if description.Valid {
 		state.Description = description.String
 	}
+	if isOutlier.Valid {
+		state.IsOutlier = isOutlier.Bool
+	}
 	userStates[userID] = state
 
-	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nAre you sure you want to DELETE this transaction?",
-		id, typ, category, amount, state.Description)
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nQuantity: %.2f\nAmount: %.2f\nDescription: %s\nIs Outlier: %v\n\nAre you sure you want to DELETE this transaction?",
+		id, typ, category, quantity, amount, state.Description, state.IsOutlier)
 	buttons := [][]InlineKeyboardButton{
 		{
 			{Text: "Confirm Delete", CallbackData: "delete_confirm"},
@@ -1485,16 +1706,18 @@ func processDeleteId(message *TGMessage, state *TransactionState) {
 		return
 	}
 
-	row := db.QueryRow("SELECT id, type, category, amount, description, created_at FROM transactions WHERE id = ?", id)
+	row := db.QueryRow("SELECT id, type, category, quantity, amount, description, created_at, is_outlier FROM transactions WHERE id = ?", id)
 	var (
 		rid         int64
 		typ         string
 		category    string
+		quantity    float64
 		amount      float64
 		description sql.NullString
 		createdAt   string
+		isOutlier   sql.NullBool
 	)
-	err = row.Scan(&rid, &typ, &category, &amount, &description, &createdAt)
+	err = row.Scan(&rid, &typ, &category, &quantity, &amount, &description, &createdAt, &isOutlier)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			sendMessage(message.Chat.ID, fmt.Sprintf("Transaction with ID %d not found.", id))
@@ -1509,13 +1732,17 @@ func processDeleteId(message *TGMessage, state *TransactionState) {
 	state.TransactionType = typ
 	state.Category = category
 	state.Amount = amount
+	state.Quantity = quantity
 	if description.Valid {
 		state.Description = description.String
 	}
+	if isOutlier.Valid {
+		state.IsOutlier = isOutlier.Bool
+	}
 	state.Step = "CONFIRM_DELETE"
 
-	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nAmount: %.2f\nDescription: %s\n\nAre you sure you want to DELETE this transaction?",
-		id, typ, category, amount, state.Description)
+	details := fmt.Sprintf("Transaction ID: %d\nType: %s\nCategory: %s\nQuantity: %.2f\nAmount: %.2f\nDescription: %s\nIs Outlier: %v\n\nAre you sure you want to DELETE this transaction?",
+		id, typ, category, quantity, amount, state.Description, state.IsOutlier)
 	buttons := [][]InlineKeyboardButton{
 		{
 			{Text: "Confirm Delete", CallbackData: "delete_confirm"},
