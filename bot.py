@@ -1,12 +1,5 @@
+#!/usr/bin/env python3
 """
-Bot Telegram: insert transaksi expense/income ke SQLite + generate laporan HTML.
-Pure stdlib, tanpa dependency apapun
-
-Env vars:
-  TELEGRAM_BOT_TOKEN   - wajib, token dari BotFather
-  DB_PATH              - opsional, default "finance.db"
-  ALLOWED_USER_ID      - opsional, kalau diisi cuma user_id ini yang bisa pakai bot
-
 Command di Telegram:
   /start            - lihat cara pakai
   /cancel           - batalin input yang lagi jalan
@@ -16,6 +9,11 @@ Insert transaksi, kirim pesan:
   "Nasi Bali, 14000"        (format: deskripsi, jumlah)
   "Nasi Bali, 2, 14000"     (format: deskripsi, quantity, jumlah)
   -> pilih tipe & kategori lewat inline button
+
+Insert cepat (skip inline button), kirim pesan:
+  "Nasi Bali, 14000, expense, Food"        (format: deskripsi, jumlah, tipe, kategori)
+  "Nasi Bali, 2, 14000, expense, Food"     (format: deskripsi, quantity, jumlah, tipe, kategori)
+  -> langsung tersimpan, ga perlu klik apa-apa
 """
 
 import os
@@ -34,9 +32,9 @@ def escape(value):
     """escape() versi aman, handle None/angka tanpa crash."""
     return _escape(str(value) if value is not None else "")
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-DB_PATH = os.environ.get("DB_PATH", "finance.db")
-ALLOWED_USER_ID = os.environ.get("ALLOWED_USER_ID")  # string atau None
+TOKEN = ""
+DB_PATH = "transactions.db"
+ALLOWED_USER_ID = 
 
 if not TOKEN:
     raise SystemExit("Set env var TELEGRAM_BOT_TOKEN dulu")
@@ -274,6 +272,45 @@ def parse_input(text):
     return description, quantity, amount
 
 
+def parse_quick_input(text):
+    """
+    Parse format insert cepat yang udah termasuk tipe & kategori, biar ga
+    perlu inline button:
+      "deskripsi, jumlah, tipe, kategori"
+      "deskripsi, quantity, jumlah, tipe, kategori"
+    Return None kalau bukan format ini (fallback ke parse_input biasa).
+    """
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) not in (4, 5):
+        return None
+
+    type_raw = parts[-2].strip().lower()
+    if type_raw not in TYPES:
+        return None
+
+    category_raw = parts[-1].strip().lower()
+    category = next((c for c in CATEGORIES if c.lower() == category_raw), None)
+    if category is None:
+        return None
+
+    if len(parts) == 4:
+        description, amount_raw = parts[0], parts[1]
+        quantity = 1
+    else:
+        description, quantity_raw, amount_raw = parts[0], parts[1], parts[2]
+        try:
+            quantity = int(quantity_raw)
+        except ValueError:
+            return None
+
+    amount = clean_amount(amount_raw)
+    description = description.strip()
+    if not description or amount is None or amount <= 0:
+        return None
+
+    return description, quantity, amount, type_raw, category
+
+
 # ---------- Chart / color helpers (pure SVG, no dependency) ----------
 
 def color_scale(value, min_v, max_v, low_hex, mid_hex, high_hex):
@@ -396,23 +433,33 @@ def generate_html_report(data, out_path):
     for row in data:
         month_str = row["created_at"].strftime("%Y%m")
         month_data.setdefault(month_str, []).append(row)
-        totals = monthly_totals.setdefault(month_str, {"income": 0, "expense_clean": 0, "expense_outlier": 0})
+        totals = monthly_totals.setdefault(
+            month_str, {"income_clean": 0, "income_outlier": 0, "expense_clean": 0, "expense_outlier": 0}
+        )
         if row["type"] == "expense":
             if row["is_outlier"]:
                 totals["expense_outlier"] += row["amount"] or 0
             else:
                 totals["expense_clean"] += row["amount"] or 0
         else:
-            totals["income"] += row["amount"] or 0
+            if row["is_outlier"]:
+                totals["income_outlier"] += row["amount"] or 0
+            else:
+                totals["income_clean"] += row["amount"] or 0
 
     months_sorted = sorted(monthly_totals.keys())
-    incomes = [monthly_totals[m]["income"] for m in months_sorted]
+    months_sorted_desc = sorted(monthly_totals.keys(), reverse=True)
+    incomes = [
+        monthly_totals[m]["income_clean"] + monthly_totals[m]["income_outlier"] for m in months_sorted
+    ]
     expenses = [monthly_totals[m]["expense_clean"] + monthly_totals[m]["expense_outlier"] for m in months_sorted]
 
-    income_vals = incomes or [0]
+    income_clean_vals = [monthly_totals[m]["income_clean"] for m in months_sorted] or [0]
+    income_out_vals = [monthly_totals[m]["income_outlier"] for m in months_sorted] or [0]
     exp_clean_vals = [monthly_totals[m]["expense_clean"] for m in months_sorted] or [0]
     exp_out_vals = [monthly_totals[m]["expense_outlier"] for m in months_sorted] or [0]
-    income_min, income_max = min(income_vals), max(income_vals)
+    income_min, income_max = min(income_clean_vals), max(income_clean_vals)
+    income_out_min, income_out_max = min(income_out_vals), max(income_out_vals)
     exp_clean_min, exp_clean_max = min(exp_clean_vals), max(exp_clean_vals)
     exp_out_min, exp_out_max = min(exp_out_vals), max(exp_out_vals)
 
@@ -423,18 +470,22 @@ def generate_html_report(data, out_path):
     html.append("<h2>Summary</h2>")
     html.append(line_chart_svg(months_sorted, {"Income": incomes, "Expense": expenses}))
     html.append(
-        "<table><thead><tr><th>Month</th><th>Income</th>"
+        "<table><thead><tr><th>Month</th><th>Income</th><th>Income Outlier</th>"
         "<th>Expense (Outlier Excluded)</th><th>Expense Outlier</th></tr></thead><tbody>"
     )
-    for m in months_sorted:
+    for m in months_sorted_desc:
         t = monthly_totals[m]
-        income_color = color_scale(t["income"], income_min, income_max, "F8696B", "FFEB84", "63BE7B")
+        income_color = color_scale(t["income_clean"], income_min, income_max, "F8696B", "FFEB84", "63BE7B")
+        income_out_color = color_scale(
+            t["income_outlier"], income_out_min, income_out_max, "F8696B", "FFEB84", "63BE7B"
+        )
         exp_clean_color = color_scale(t["expense_clean"], exp_clean_min, exp_clean_max, "63BE7B", "FFEB84", "F8696B")
         exp_out_color = color_scale(t["expense_outlier"], exp_out_min, exp_out_max, "63BE7B", "FFEB84", "F8696B")
         html.append(
             "<tr>"
             f"<td>{escape(m)}</td>"
-            f"<td style='background:{income_color}'>Rp{t['income']:,.0f}</td>"
+            f"<td style='background:{income_color}'>Rp{t['income_clean']:,.0f}</td>"
+            f"<td style='background:{income_out_color}'>Rp{t['income_outlier']:,.0f}</td>"
             f"<td style='background:{exp_clean_color}'>Rp{t['expense_clean']:,.0f}</td>"
             f"<td style='background:{exp_out_color}'>Rp{t['expense_outlier']:,.0f}</td>"
             "</tr>"
@@ -507,8 +558,13 @@ def handle_message(msg):
             "Kirim data dengan format:\n"
             "deskripsi, jumlah\n"
             "atau\n"
-            "deskripsi, quantity, jumlah\n\n"
-            "Contoh: Nasi Bali, 14000\n\n"
+            "deskripsi, quantity, jumlah\n"
+            "-> nanti pilih tipe & kategori lewat tombol\n\n"
+            "Insert cepat (skip tombol):\n"
+            "deskripsi, jumlah, tipe, kategori\n"
+            "atau\n"
+            "deskripsi, quantity, jumlah, tipe, kategori\n"
+            "Contoh: Nasi Bali, 2, 14000, expense, Food\n\n"
             "Command lain:\n"
             "/get_last_report - generate & kirim laporan HTML\n"
             "/cancel - batalin input yang lagi jalan",
@@ -530,9 +586,28 @@ def handle_message(msg):
                 os.remove(report_path)
         return
 
+    # coba format insert cepat dulu (udah termasuk tipe & kategori)
+    quick = parse_quick_input(text)
+    if quick is not None:
+        description, quantity, amount, tx_type, category = quick
+        tx_id, created = insert_transaction(description, quantity, amount, tx_type, category)
+        send_message(
+            chat_id,
+            f"Tersimpan \u2705\n"
+            f"{description} | {tx_type} | {category}\n"
+            f"Qty {quantity} | Rp{amount:,}\n"
+            f"ID {tx_id} | {created}",
+        )
+        return
+
     parsed = parse_input(text)
     if parsed is None:
-        send_message(chat_id, "Format ga kebaca. Contoh: Nasi Bali, 14000")
+        send_message(
+            chat_id,
+            "Format ga kebaca. Contoh:\n"
+            "Nasi Bali, 14000\n"
+            "atau langsung: Nasi Bali, 2, 14000, expense, Food",
+        )
         return
 
     description, quantity, amount = parsed
