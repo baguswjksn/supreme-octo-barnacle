@@ -33,8 +33,8 @@ def escape(value):
     return _escape(str(value) if value is not None else "")
 
 TOKEN = ""
-DB_PATH = "transactions.db"
-ALLOWED_USER_ID = 
+DB_PATH = ""
+ALLOWED_USER_ID =  # string atau None
 
 if not TOKEN:
     raise SystemExit("Set env var TELEGRAM_BOT_TOKEN dulu")
@@ -318,75 +318,73 @@ def color_scale(value, min_v, max_v, low_hex, mid_hex, high_hex):
         ratio = 0.5
     else:
         ratio = (value - min_v) / (max_v - min_v)
-    ratio = max(0.0, min(1.0, ratio))
-
-    def h2rgb(h):
-        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-
-    low, mid, high = h2rgb(low_hex), h2rgb(mid_hex), h2rgb(high_hex)
-    if ratio <= 0.5:
-        t = ratio / 0.5
-        rgb = tuple(int(low[i] + (mid[i] - low[i]) * t) for i in range(3))
+    if ratio < 0.5:
+        r = int(low_hex[0:2], 16) + (int(mid_hex[0:2], 16) - int(low_hex[0:2], 16)) * ratio * 2
+        g = int(low_hex[2:4], 16) + (int(mid_hex[2:4], 16) - int(low_hex[2:4], 16)) * ratio * 2
+        b = int(low_hex[4:6], 16) + (int(mid_hex[4:6], 16) - int(low_hex[4:6], 16)) * ratio * 2
     else:
-        t = (ratio - 0.5) / 0.5
-        rgb = tuple(int(mid[i] + (high[i] - mid[i]) * t) for i in range(3))
-    return "#%02X%02X%02X" % rgb
+        r = int(mid_hex[0:2], 16) + (int(high_hex[0:2], 16) - int(mid_hex[0:2], 16)) * (ratio - 0.5) * 2
+        g = int(mid_hex[2:4], 16) + (int(high_hex[2:4], 16) - int(mid_hex[2:4], 16)) * (ratio - 0.5) * 2
+        b = int(mid_hex[4:6], 16) + (int(high_hex[4:6], 16) - int(mid_hex[4:6], 16)) * (ratio - 0.5) * 2
+    return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
 
 
-def pie_chart_svg(items, size=240):
-    if not items:
+def pie_chart_svg(items):
+    total = sum(v for _, v in items)
+    if total == 0:
         return ""
-    total = sum(v for _, v in items) or 1
-    cx = cy = size / 2
-    r = size / 2 - 10
-    start_angle = -90.0
-    paths = []
-    legend = []
-    for i, (label, value) in enumerate(items):
-        color = PALETTE[i % len(PALETTE)]
-        angle = (value / total) * 360.0
-        end_angle = start_angle + angle
-        x1 = cx + r * math.cos(math.radians(start_angle))
-        y1 = cy + r * math.sin(math.radians(start_angle))
-        x2 = cx + r * math.cos(math.radians(end_angle))
-        y2 = cy + r * math.sin(math.radians(end_angle))
+    start_angle = 0
+    parts = [f'<svg width="300" height="300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">']
+    for idx, (label, value) in enumerate(items):
+        angle = (value / total) * 360
+        start_rad = math.radians(start_angle)
+        end_rad = math.radians(start_angle + angle)
         large_arc = 1 if angle > 180 else 0
-        if len(items) == 1:
-            paths.append(f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{color}"/>')
-        else:
-            paths.append(
-                f'<path d="M{cx},{cy} L{x1:.2f},{y1:.2f} A{r},{r} 0 {large_arc} 1 {x2:.2f},{y2:.2f} Z" '
-                f'fill="{color}" stroke="#fff" stroke-width="1"/>'
-            )
-        pct = value / total * 100
+        x1 = 150 + 100 * math.cos(start_rad)
+        y1 = 150 + 100 * math.sin(start_rad)
+        x2 = 150 + 100 * math.cos(end_rad)
+        y2 = 150 + 100 * math.sin(end_rad)
+        color = PALETTE[idx % len(PALETTE)]
+        parts.append(
+            f'<path d="M 150 150 L {x1} {y1} A 100 100 0 {large_arc} 1 {x2} {y2} Z" '
+            f'fill="{color}" stroke="white" stroke-width="2"/>'
+        )
+        mid_angle = math.radians(start_angle + angle / 2)
+        label_x = 150 + 65 * math.cos(mid_angle)
+        label_y = 150 + 65 * math.sin(mid_angle)
+        parts.append(
+            f'<text x="{label_x}" y="{label_y}" text-anchor="middle" '
+            f'font-size="11" fill="white" font-weight="bold">{escape(f"{value:,.0f}")}</text>'
+        )
+        start_angle += angle
+    parts.append("</svg>")
+    legend = []
+    for idx, (label, value) in enumerate(items):
+        pct = (value / total * 100) if total > 0 else 0
+        color = PALETTE[idx % len(PALETTE)]
         legend.append(
             f'<div class="legend-item"><span class="swatch" style="background:{color}"></span>'
-            f'{escape(label)}: Rp{value:,.0f} ({pct:.1f}%)</div>'
+            f'{escape(label)} &ndash; Rp{value:,.0f} ({pct:.1f}%)</div>'
         )
-        start_angle = end_angle
-    svg = f'<svg viewBox="0 0 {size} {size}" width="{size}" height="{size}">{"".join(paths)}</svg>'
-    return f'<div class="chart-wrap"><div>{svg}</div><div class="legend">{"".join(legend)}</div></div>'
+    return '<div class="chart-wrap"><div>' + "".join(parts) + '</div><div>' + "".join(legend) + "</div></div>"
 
 
-def line_chart_svg(months, series, height=280, pad=50, min_col_width=55):
-    width = max(400, pad * 2 + max(1, len(months) - 1) * min_col_width)
-    all_values = [v for vals in series.values() for v in vals] or [0]
-    max_v = max(all_values + [0])
-    min_v = min(all_values + [0])
-
-    def x_pos(i):
-        if len(months) <= 1:
-            return pad
-        return pad + i * (width - 2 * pad) / (len(months) - 1)
-
-    def y_pos(v):
-        if max_v == min_v:
-            return height - pad
-        return height - pad - (v - min_v) / (max_v - min_v) * (height - 2 * pad)
-
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}">']
-    parts.append(f'<line x1="{pad}" y1="{height - pad}" x2="{width - pad}" y2="{height - pad}" stroke="#999"/>')
-    parts.append(f'<line x1="{pad}" y1="10" x2="{pad}" y2="{height - pad}" stroke="#999"/>')
+def line_chart_svg(months, series):
+    if not months:
+        return ""
+    width, height = 700, 300
+    pad = 40
+    plot_width = width - pad * 2
+    plot_height = height - pad * 2
+    max_val = max((max(vals) if vals else 0) for vals in series.values()) or 1
+    x_pos = lambda i: pad + (i / (len(months) - 1 if len(months) > 1 else 1)) * plot_width
+    y_pos = lambda v: pad + plot_height - (v / max_val * plot_height)
+    parts = [
+        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
+        f'<rect width="{width}" height="{height}" fill="white"/>',
+        f'<line x1="{pad}" y1="{height - pad}" x2="{width - pad}" y2="{height - pad}" stroke="#ccc" stroke-width="1"/>',
+        f'<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{height - pad}" stroke="#ccc" stroke-width="1"/>',
+    ]
 
     colors = {"Income": "#2E7D32", "Expense": "#C62828"}
     legend = []
@@ -412,17 +410,101 @@ def line_chart_svg(months, series, height=280, pad=50, min_col_width=55):
 
 STYLE = """
 <style>
-  body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #222; }
-  h1 { margin-bottom: 0; }
-  .muted { color: #777; margin-top: 4px; }
-  table { border-collapse: collapse; width: 100%; margin: 12px 0 28px; font-size: 13px; }
-  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
-  th { background: #ADD8E6; font-weight: bold; }
+  * { box-sizing: border-box; }
+  body { 
+    font-family: Arial, Helvetica, sans-serif; 
+    margin: 0; 
+    padding: 16px; 
+    color: #222; 
+    background: #fff;
+  }
+  h1 { margin: 0 0 4px; font-size: 24px; }
+  h2 { margin: 24px 0 12px; font-size: 18px; }
+  .muted { color: #777; margin-top: 4px; font-size: 13px; }
+  
+  /* Table responsive */
+  .table-wrapper { width: 100%; overflow-x: auto; margin: 12px 0 28px; }
+  table { 
+    border-collapse: collapse; 
+    width: 100%; 
+    font-size: 13px; 
+    min-width: 800px;
+  }
+  th, td { 
+    border: 1px solid #ccc; 
+    padding: 8px 6px; 
+    text-align: right;
+  }
+  th { 
+    background: #ADD8E6; 
+    font-weight: bold;
+    position: sticky;
+    top: 0;
+  }
+  td:first-child, th:first-child { text-align: left; }
   tr:nth-child(even) td { background: #fafafa; }
-  .chart-wrap { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-bottom: 8px; max-width: 100%; overflow-x: auto; }
-  .legend { font-size: 12px; }
-  .legend-item { margin-bottom: 4px; }
-  .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; }
+  tr:hover td { background: #f0f0f0 !important; }
+  
+  /* Ratio columns styling */
+  .ratio-value { font-weight: 600; }
+  .ratio-good { color: #2E7D32; }
+  .ratio-warn { color: #F57C00; }
+  .ratio-bad { color: #C62828; }
+  
+  /* Chart responsive */
+  .chart-wrap { 
+    display: flex; 
+    align-items: center; 
+    gap: 20px; 
+    flex-wrap: wrap; 
+    margin-bottom: 8px; 
+    max-width: 100%; 
+    overflow-x: auto; 
+  }
+  .chart-wrap svg { 
+    max-width: 100%; 
+    height: auto; 
+  }
+  .legend { 
+    font-size: 12px; 
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .legend-item { 
+    margin-bottom: 4px; 
+    white-space: nowrap;
+  }
+  .swatch { 
+    display: inline-block; 
+    width: 10px; 
+    height: 10px; 
+    margin-right: 6px; 
+    border-radius: 2px; 
+    vertical-align: middle;
+  }
+  
+  /* Mobile responsif */
+  @media (max-width: 768px) {
+    body { padding: 12px; }
+    h1 { font-size: 20px; }
+    h2 { font-size: 16px; margin: 16px 0 8px; }
+    table { font-size: 12px; min-width: 600px; }
+    th, td { padding: 6px 4px; }
+    .table-wrapper { margin: 8px 0 20px; }
+    .chart-wrap { gap: 12px; }
+    .legend { font-size: 11px; gap: 12px; }
+  }
+  
+  @media (max-width: 480px) {
+    body { padding: 8px; }
+    h1 { font-size: 18px; }
+    h2 { font-size: 14px; margin: 12px 0 6px; }
+    table { font-size: 11px; min-width: 550px; }
+    th, td { padding: 5px 3px; }
+    .ratio-value { font-weight: 600; }
+    .legend { font-size: 10px; gap: 8px; }
+  }
 </style>
 """
 
@@ -454,43 +536,86 @@ def generate_html_report(data, out_path):
     ]
     expenses = [monthly_totals[m]["expense_clean"] + monthly_totals[m]["expense_outlier"] for m in months_sorted]
 
-    income_clean_vals = [monthly_totals[m]["income_clean"] for m in months_sorted] or [0]
-    income_out_vals = [monthly_totals[m]["income_outlier"] for m in months_sorted] or [0]
-    exp_clean_vals = [monthly_totals[m]["expense_clean"] for m in months_sorted] or [0]
-    exp_out_vals = [monthly_totals[m]["expense_outlier"] for m in months_sorted] or [0]
+    # Cuma bulan sampe bulan berjalan yang di-color grade. Bulan yang
+    # kecatet di masa depan (misal salah input tanggal) dibiarin polos.
+    current_month = datetime.now().strftime("%Y%m")
+    graded_months = [m for m in months_sorted if m <= current_month]
+
+    income_clean_vals = [monthly_totals[m]["income_clean"] for m in graded_months] or [0]
+    income_out_vals = [monthly_totals[m]["income_outlier"] for m in graded_months] or [0]
+    exp_clean_vals = [monthly_totals[m]["expense_clean"] for m in graded_months] or [0]
+    exp_out_vals = [monthly_totals[m]["expense_outlier"] for m in graded_months] or [0]
     income_min, income_max = min(income_clean_vals), max(income_clean_vals)
     income_out_min, income_out_max = min(income_out_vals), max(income_out_vals)
     exp_clean_min, exp_clean_max = min(exp_clean_vals), max(exp_clean_vals)
     exp_out_min, exp_out_max = min(exp_out_vals), max(exp_out_vals)
 
-    html = ["<html><head><meta charset='utf-8'><title>Laporan Transaksi</title>", STYLE, "</head><body>"]
+    html = ["<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Laporan Transaksi</title>", STYLE, "</head><body>"]
     html.append("<h1>Laporan Transaksi</h1>")
     html.append(f"<p class='muted'>Dibuat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>")
 
     html.append("<h2>Summary</h2>")
     html.append(line_chart_svg(months_sorted, {"Income": incomes, "Expense": expenses}))
+    html.append("<div class='table-wrapper'>")
     html.append(
         "<table><thead><tr><th>Month</th><th>Income</th><th>Income Outlier</th>"
-        "<th>Expense (Outlier Excluded)</th><th>Expense Outlier</th></tr></thead><tbody>"
+        "<th>Expense (Outlier Excluded)</th><th>Expense Outlier</th><th>Expense Ratio</th><th>Saving %</th></tr></thead><tbody>"
     )
     for m in months_sorted_desc:
         t = monthly_totals[m]
-        income_color = color_scale(t["income_clean"], income_min, income_max, "F8696B", "FFEB84", "63BE7B")
-        income_out_color = color_scale(
-            t["income_outlier"], income_out_min, income_out_max, "F8696B", "FFEB84", "63BE7B"
-        )
-        exp_clean_color = color_scale(t["expense_clean"], exp_clean_min, exp_clean_max, "63BE7B", "FFEB84", "F8696B")
-        exp_out_color = color_scale(t["expense_outlier"], exp_out_min, exp_out_max, "63BE7B", "FFEB84", "F8696B")
+        total_income = t["income_clean"] + t["income_outlier"]
+        expense_clean = t["expense_clean"]
+        
+        # Calculate ratios
+        if total_income > 0:
+            expense_ratio = (expense_clean / total_income) * 100
+            saving_pct = ((total_income - expense_clean) / total_income) * 100
+        else:
+            expense_ratio = 0
+            saving_pct = 0
+        
+        # Determine color for ratios
+        if expense_ratio <= 50:
+            exp_ratio_class = "ratio-good"
+        elif expense_ratio <= 75:
+            exp_ratio_class = "ratio-warn"
+        else:
+            exp_ratio_class = "ratio-bad"
+        
+        if saving_pct >= 30:
+            saving_class = "ratio-good"
+        elif saving_pct >= 10:
+            saving_class = "ratio-warn"
+        else:
+            saving_class = "ratio-bad"
+        
+        if m <= current_month:
+            income_color = color_scale(t["income_clean"], income_min, income_max, "F8696B", "FFEB84", "63BE7B")
+            income_out_color = color_scale(
+                t["income_outlier"], income_out_min, income_out_max, "F8696B", "FFEB84", "63BE7B"
+            )
+            exp_clean_color = color_scale(t["expense_clean"], exp_clean_min, exp_clean_max, "63BE7B", "FFEB84", "F8696B")
+            exp_out_color = color_scale(t["expense_outlier"], exp_out_min, exp_out_max, "63BE7B", "FFEB84", "F8696B")
+            income_style = f" style='background:{income_color}'"
+            income_out_style = f" style='background:{income_out_color}'"
+            exp_clean_style = f" style='background:{exp_clean_color}'"
+            exp_out_style = f" style='background:{exp_out_color}'"
+        else:
+            # bulan di masa depan: ga di-grade
+            income_style = income_out_style = exp_clean_style = exp_out_style = ""
         html.append(
             "<tr>"
             f"<td>{escape(m)}</td>"
-            f"<td style='background:{income_color}'>Rp{t['income_clean']:,.0f}</td>"
-            f"<td style='background:{income_out_color}'>Rp{t['income_outlier']:,.0f}</td>"
-            f"<td style='background:{exp_clean_color}'>Rp{t['expense_clean']:,.0f}</td>"
-            f"<td style='background:{exp_out_color}'>Rp{t['expense_outlier']:,.0f}</td>"
+            f"<td{income_style}>Rp{t['income_clean']:,.0f}</td>"
+            f"<td{income_out_style}>Rp{t['income_outlier']:,.0f}</td>"
+            f"<td{exp_clean_style}>Rp{t['expense_clean']:,.0f}</td>"
+            f"<td{exp_out_style}>Rp{t['expense_outlier']:,.0f}</td>"
+            f"<td class='ratio-value {exp_ratio_class}'>{expense_ratio:.1f}%</td>"
+            f"<td class='ratio-value {saving_class}'>{saving_pct:.1f}%</td>"
             "</tr>"
         )
     html.append("</tbody></table>")
+    html.append("</div>")
 
     for m in sorted(month_data.keys(), reverse=True):
         rows = month_data[m]
@@ -502,9 +627,9 @@ def generate_html_report(data, out_path):
                 cat = r["category"] or "(tanpa kategori)"
                 cat_totals[cat] = cat_totals.get(cat, 0) + (r["amount"] or 0)
         if cat_totals:
-            items = sorted(cat_totals.items(), key=lambda kv: -kv[1])
-            html.append(pie_chart_svg(items))
+            html.append(pie_chart_svg(sorted(cat_totals.items(), key=lambda kv: -kv[1])))
 
+        html.append("<div class='table-wrapper'>")
         html.append(
             "<table><thead><tr><th>ID</th><th>Type</th><th>Category</th><th>Qty</th>"
             "<th>Amount</th><th>Description</th><th>Created</th><th>Outlier</th></tr></thead><tbody>"
@@ -523,6 +648,7 @@ def generate_html_report(data, out_path):
                 "</tr>"
             )
         html.append("</tbody></table>")
+        html.append("</div>")
 
     html.append("</body></html>")
 
