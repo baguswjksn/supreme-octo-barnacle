@@ -1,0 +1,5 @@
+transactions.db
+*.backup-*.db
+.env
+__pycache__/
+transactions.backup-20261027.db
