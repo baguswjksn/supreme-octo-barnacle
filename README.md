@@ -1,0 +1,151 @@
+# supreme-octo-barnacle
+
+Bot Telegram pencatat keuangan pribadi. Transaksi expense/income disimpan di SQLite (`transactions.db`), saldo dicatat per akun (bank, e-wallet, cash), dan laporan bisa diambil langsung dari Telegram dalam bentuk Excel atau gambar.
+
+## Fitur
+
+- Input transaksi lewat tombol (`/add`) atau satu baris teks (format cepat)
+- Saldo per akun yang otomatis berubah setiap ada transaksi, lengkap dengan riwayatnya
+- Laporan Excel: ringkasan bulanan (Income, Expense, Expense Ratio, Saving, Saving %) + detail transaksi per bulan
+- Gambar expense 7 hari terakhir: per hari dan per kategori
+- Laporan HTML lewat command line
+
+## Persiapan
+
+Butuh Python 3.10 ke atas.
+
+```
+pip install -r requirements.txt
+```
+
+Salin `.env.example` jadi `.env`, lalu isi:
+
+```
+TELEGRAM_BOT_TOKEN=<token dari @BotFather>
+ALLOWED_USER_ID=<user ID Telegram kamu, cek lewat @userinfobot>
+```
+
+`ALLOWED_USER_ID` membatasi siapa yang boleh pakai bot. Kalau dikosongkan, semua orang yang menemukan bot bisa memasukkan data. File `.env` sudah ada di `.gitignore`, jangan di-commit.
+
+## Menjalankan bot
+
+```
+python ingest_transaction.py
+```
+
+Bot jalan terus (long polling) dan langsung membalas setiap pesan. Stop dengan `Ctrl+C`. Kalau internet putus, bot mencoba lagi sendiri setiap 5 detik.
+
+Database selalu `transactions.db` di folder yang sama dengan script, jadi script bisa dijalankan dari folder mana pun. Tabel dan kolom yang belum ada dibuat otomatis saat bot start.
+
+## Command Telegram
+
+| Command | Fungsi |
+|---|---|
+| `/add` | Tambah transaksi: pilih tipe → akun → kategori → ketik amount → ketik deskripsi |
+| `/cancel` | Batalkan `/add` yang sedang berjalan |
+| `/balance [n]` | Saldo tiap akun + total, dan `n` perubahan saldo terakhir (default 5) |
+| `/setbalance <akun> <angka>` | Koreksi saldo akun supaya sama dengan saldo aslinya, misalnya `/setbalance cash 250000` |
+| `/last [n]` | `n` transaksi yang terakhir dimasukkan (default 10, maksimal 50) |
+| `/report` | Kirim laporan Excel (.xlsx) |
+| `/weekly` | Kirim gambar expense 7 hari terakhir |
+
+Command lain atau format yang tidak dikenali dibalas dengan daftar bantuan.
+
+### Format cepat
+
+Kirim satu baris dengan bagian dipisah koma:
+
+```
+deskripsi, amount, tipe, kategori, akun
+deskripsi, quantity, amount, tipe, kategori, akun
+```
+
+Contoh:
+
+```
+Nasi Bali, 14000, expense, Food, Cash
+Nasi Bali, 2, 28000, expense, Food, dana
+Gaji, 5000000, income, Active Income, mega
+```
+
+- `amount` adalah total, bukan harga satuan. Boleh ditulis `14000`, `14.000`, atau `Rp 14.000`.
+- `tipe`: `expense` atau `income`.
+- `akun` boleh tidak ditulis. Kalau tidak ada, bot menanyakan akunnya lewat tombol.
+- Nama akun boleh disingkat atau ditulis huruf kecil, selama tidak ambigu: `mega`, `bca`, `dana`, `shopee`, `cash`.
+- Waktu transaksi adalah waktu pesan dikirim.
+
+### Kategori
+
+Active Income, Bills, Book, Entertainment, Food, Healthcare, House, Internet, Laundry, Needs, Outlier, Rent, Transportation, Utilities, Water.
+
+Expense dengan kategori **Outlier** ditandai sebagai outlier: tidak dihitung di Expense (Outlier Excluded), Expense Ratio, Saving, maupun gambar weekly, tapi tetap mengurangi saldo akun. Income tidak pernah ditandai outlier.
+
+## Akun dan saldo
+
+Daftar akun ada di `ACCOUNTS` di `ingest_transaction.py`:
+
+```python
+ACCOUNTS = ["Bank Mega Syariah", "ShopeePay", "DANA", "BCA Mobile", "Cash"]
+```
+
+Untuk menambah akun, tambahkan namanya di sana, restart bot, lalu set saldo awalnya dengan `/setbalance`.
+
+Saldo dihitung lewat trigger SQLite di tabel `transactions`, jadi tetap benar walaupun data diubah di luar bot (misalnya lewat DB Browser):
+
+- **Insert**: income menambah saldo akun, expense mengurangi.
+- **Update** amount, tipe, atau akun: efek lama dibatalkan di akun lama, efek baru diterapkan di akun baru.
+- **Delete**: efek transaksi dibatalkan.
+- **`/setbalance`**: dicatat sebagai koreksi (`adjust`).
+
+Transaksi tanpa akun (data lama sebelum fitur akun ada) tidak ikut menghitung saldo, tapi tetap masuk laporan.
+
+Belum ada fitur transfer antar akun. Untuk sementara, catat sebagai expense di akun asal dan income di akun tujuan (keduanya akan ikut terhitung di laporan income/expense).
+
+## Laporan dari command line
+
+```
+python g_last_r.py                 # report.html
+python g_last_r.py laporan.html    # HTML ke file tertentu
+python g_last_r.py laporan.xlsx    # Excel
+python g_weekly_e.py               # weekly_expense.png
+python g_weekly_e.py minggu.png    # PNG ke file tertentu
+```
+
+Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan berjalan. Bulan di masa depan (biasanya salah input tanggal) dibiarkan polos.
+
+## Struktur database
+
+**`transactions`**
+
+| Kolom | Isi |
+|---|---|
+| `id` | ID transaksi, contoh `r5d526bb03b79a7` |
+| `description` | Deskripsi |
+| `created` | Waktu transaksi, format `YYYYMMDDHHMMSS` |
+| `quantity` | Jumlah barang |
+| `amount` | Total nominal (Rupiah) |
+| `is_outlier` | `1` kalau expense outlier |
+| `type` | `expense` atau `income` |
+| `category` | Kategori |
+| `account` | Nama akun, `NULL` untuk data lama |
+
+**`balance_history`**: satu baris setiap kali saldo sebuah akun berubah.
+
+| Kolom | Isi |
+|---|---|
+| `account` | Nama akun |
+| `transaction_id` | Transaksi penyebab perubahan (`NULL` untuk koreksi manual) |
+| `created` | Waktu perubahan |
+| `change` | Perubahan saldo (`+` / `−`) |
+| `balance` | Saldo akun setelah perubahan |
+| `note` | `transaction`, `update`, `delete`, atau `adjust` |
+
+## Struktur file
+
+| File | Isi |
+|---|---|
+| `ingest_transaction.py` | Bot Telegram: input transaksi, akun dan saldo, command |
+| `g_last_r.py` | Laporan HTML dan Excel |
+| `g_weekly_e.py` | Gambar expense 7 hari terakhir |
+| `requirements.txt` | Dependency (`openpyxl`, `matplotlib`) |
+| `.env.example` | Template konfigurasi |
