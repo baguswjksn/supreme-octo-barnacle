@@ -8,6 +8,7 @@ Bot Telegram pencatat keuangan pribadi. Transaksi expense/income disimpan di SQL
 - Saldo per akun yang otomatis berubah setiap ada transaksi, lengkap dengan riwayatnya
 - Laporan Excel: ringkasan bulanan (Income, Expense, Expense Ratio, Saving, Saving %) + detail transaksi per bulan
 - Gambar expense 7 hari terakhir: per hari dan per kategori
+- Insight bulanan dalam bentuk teks: perbandingan dengan bulan lalu, proyeksi akhir bulan, top kategori, dan lainnya
 - Laporan HTML lewat command line
 
 ## Persiapan
@@ -48,8 +49,21 @@ Database selalu `transactions.db` di folder yang sama dengan script, jadi script
 | `/last [n]` | `n` transaksi yang terakhir dimasukkan (default 10, maksimal 50) |
 | `/report` | Kirim laporan Excel (.xlsx) |
 | `/weekly` | Kirim gambar expense 7 hari terakhir |
+| `/insight [YYYYMM]` | Insight bulan berjalan, atau bulan tertentu, misalnya `/insight 202609` |
 
 Command lain atau format yang tidak dikenali dibalas dengan daftar bantuan.
+
+### Insight
+
+`/insight` membalas ringkasan teks satu bulan (expense selalu tanpa outlier):
+
+- Income, expense, saving, dan saving %
+- Perbandingan dengan bulan lalu. Untuk bulan berjalan, yang dibandingkan periode yang sama (misalnya tanggal 1–28 bulan ini vs 1–28 bulan lalu), jadi tetap adil walaupun bulan belum selesai
+- Rata-rata expense per hari, proyeksi expense dan saving di akhir bulan (hanya bulan berjalan)
+- Rata-rata expense 3 bulan sebelumnya sebagai patokan normal, dan apakah bulan ini di atas atau di bawahnya
+- 5 kategori terbesar beserta porsi dan perubahannya dibanding bulan lalu
+- Kategori yang naik dan turun paling banyak
+- Expense terbesar, jumlah hari tanpa expense, dan total outlier
 
 ### Format cepat
 
@@ -109,6 +123,8 @@ python g_last_r.py laporan.html    # HTML ke file tertentu
 python g_last_r.py laporan.xlsx    # Excel
 python g_weekly_e.py               # weekly_expense.png
 python g_weekly_e.py minggu.png    # PNG ke file tertentu
+python g_insight.py                # insight bulan berjalan
+python g_insight.py 202609         # insight bulan tertentu
 ```
 
 Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan berjalan. Bulan di masa depan (biasanya salah input tanggal) dibiarkan polos.
@@ -147,5 +163,6 @@ Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan be
 | `ingest_transaction.py` | Bot Telegram: input transaksi, akun dan saldo, command |
 | `g_last_r.py` | Laporan HTML dan Excel |
 | `g_weekly_e.py` | Gambar expense 7 hari terakhir |
+| `g_insight.py` | Insight bulanan (teks) |
 | `requirements.txt` | Dependency (`openpyxl`, `matplotlib`) |
 | `.env.example` | Template konfigurasi |
