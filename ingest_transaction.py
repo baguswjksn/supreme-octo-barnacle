@@ -13,6 +13,7 @@ Command:
   /last [n]  -> lihat n transaksi terakhir (default 10)
   /report    -> kirim laporan terbaru format Excel (.xlsx)
   /weekly    -> kirim gambar expense 7 hari terakhir
+  /insight [YYYYMM]        -> insight bulan berjalan (atau bulan tertentu): perbandingan, proyeksi, top kategori
 
 Bot jalan terus (long polling) sampai di-stop pakai Ctrl+C.
 Pesan yang formatnya ga cocok dilewat (user dikasih tau lewat balasan).
@@ -30,6 +31,7 @@ from datetime import datetime
 
 from g_last_r import DB_PATH, fetch_report_data, generate_xlsx_report, parse_created
 from g_weekly_e import generate_weekly_png
+from g_insight import monthly_insight, parse_month
 
 def load_env(path):
     """Baca file .env (KEY=VALUE per baris) ke os.environ. Env var yang udah ke-set ga ditimpa."""
@@ -549,6 +551,18 @@ def cmd_weekly(chat_id, args):
         )
 
 
+def cmd_insight(chat_id, args):
+    """/insight -> bulan berjalan, /insight 202609 -> bulan tertentu."""
+    year = month = None
+    if args:
+        parsed = parse_month(args[0])
+        if parsed is None:
+            send_message(chat_id, "Pakai: /insight atau /insight YYYYMM, contoh: /insight 202609")
+            return
+        year, month = parsed
+    send_message(chat_id, monthly_insight(fetch_report_data(), year, month))
+
+
 COMMANDS = {
     "/add": cmd_add,
     "/cancel": cmd_cancel,
@@ -557,6 +571,7 @@ COMMANDS = {
     "/last": cmd_last,
     "/report": cmd_report,
     "/weekly": cmd_weekly,
+    "/insight": cmd_insight,
 }
 
 HELP_TEXT = (
@@ -567,7 +582,8 @@ HELP_TEXT = (
     "/setbalance <akun> <angka> - koreksi saldo akun, contoh: /setbalance cash 250000\n"
     "/last [n] - lihat n transaksi terakhir\n"
     "/report - laporan Excel\n"
-    "/weekly - gambar expense 7 hari terakhir\n\n"
+    "/weekly - gambar expense 7 hari terakhir\n"
+    "/insight [YYYYMM] - insight bulan ini/bulan tertentu\n\n"
     "Atau insert cepat (akun di akhir opsional, kalau ga ditulis nanti ditanya):\n"
     "Nasi Bali, 2, 14000, expense, Food, Cash\n\n"
     "Akun: " + ", ".join(ACCOUNTS)
