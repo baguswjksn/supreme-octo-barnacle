@@ -62,7 +62,42 @@ def rows_in(data, year, month, last_day=None):
     ]
 
 
-def monthly_insight(data, year=None, month=None, today=None):
+def budget_status(data, budgets, today=None):
+    """
+    Pemakaian budget bulan berjalan. budgets = {kategori: batas per bulan}.
+    Return list dict (category, spent, limit, pct, projection) urut kategori, projection = kalau
+    kecepatan belanja sampe hari ini diterusin sampe akhir bulan.
+    """
+    today = today or datetime.now()
+    if isinstance(today, datetime):
+        today = today.date()
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    spent = summarize(rows_in(data, today.year, today.month, today.day))["categories"]
+    result = []
+    for cat, limit in sorted(budgets.items()):
+        used = spent.get(cat, 0)
+        result.append({
+            "category": cat, "spent": used, "limit": limit,
+            "pct": used / limit * 100 if limit else 0,
+            "projection": used / today.day * days_in_month,
+        })
+    return result
+
+
+def budget_line(b):
+    """Satu baris status budget, misal "Food: Rp1,200,000 / Rp1,500,000 (80%) ⚠️"."""
+    if b["spent"] > b["limit"]:
+        flag = f" 🚨 lewat Rp{b['spent'] - b['limit']:,}"
+    elif b["pct"] >= 80:
+        flag = " ⚠️"
+    elif b["projection"] > b["limit"]:
+        flag = f" (proyeksi Rp{b['projection']:,.0f}, bakal lewat)"
+    else:
+        flag = ""
+    return f"{b['category']}: Rp{b['spent']:,} / Rp{b['limit']:,} ({b['pct']:.0f}%){flag}"
+
+
+def monthly_insight(data, year=None, month=None, today=None, budgets=None):
     """
     Return teks insight buat bulan year/month (default bulan berjalan).
     Bulan berjalan dibandingin sama bulan lalu di tanggal yang sama (1 sampe hari ini),
@@ -167,6 +202,11 @@ def monthly_insight(data, year=None, month=None, today=None):
         lines.append(f"Hari tanpa expense: {no_spend} dari {day_limit} hari")
     if cur["outlier_count"]:
         lines.append(f"Outlier (ga dihitung di atas): Rp{cur['outlier']:,} dari {cur['outlier_count']} transaksi")
+
+    # budget cuma relevan buat bulan berjalan (batasnya per bulan, ga ada riwayat)
+    if is_current and budgets:
+        lines += ["", "Budget bulan ini:"]
+        lines += [budget_line(b) for b in budget_status(data, budgets, today)]
 
     return "\n".join(lines)
 

@@ -14,6 +14,14 @@ Command:
   /report    -> kirim laporan terbaru format Excel (.xlsx)
   /weekly    -> kirim gambar expense 7 hari terakhir
   /insight [YYYYMM]        -> insight bulan berjalan (atau bulan tertentu): perbandingan, proyeksi, top kategori
+  /trend [n]               -> gambar tren income/expense & saving % n bulan terakhir (default 12)
+  /transfer <dari> <ke> <x> [catatan] -> pindah saldo antar akun, ga dihitung income/expense
+  /undo                    -> hapus transaksi/transfer terakhir (pakai konfirmasi)
+  /delete <id>             -> hapus transaksi/transfer tertentu (pakai konfirmasi)
+  /edit <id> <field> <x>   -> ubah amount/desc/qty/category/type/account transaksi
+  /budget [kategori x]     -> lihat status budget bulan ini / set budget (0 = hapus)
+  /recurring [add|del]     -> transaksi rutin bulanan yang dicatet otomatis
+  /search <kata>           -> cari transaksi dari deskripsi
 
 Bot jalan terus (long polling) sampai di-stop pakai Ctrl+C.
 Pesan yang formatnya ga cocok dilewat (user dikasih tau lewat balasan).
@@ -27,11 +35,13 @@ import secrets
 import urllib.request
 import urllib.error
 import tempfile
-from datetime import datetime
+import calendar
+from datetime import datetime, timedelta
 
 from g_last_r import DB_PATH, fetch_report_data, generate_xlsx_report, parse_created
 from g_weekly_e import generate_weekly_png
-from g_insight import monthly_insight, parse_month
+from g_insight import monthly_insight, parse_month, budget_status, budget_line
+from g_trend import generate_trend_png
 
 def load_env(path):
     """Baca file .env (KEY=VALUE per baris) ke os.environ. Env var yang udah ke-set ga ditimpa."""
@@ -105,6 +115,28 @@ def init_db():
     if "account" not in columns:
         conn.execute("ALTER TABLE transactions ADD COLUMN account TEXT")
     init_balance_history(conn)
+    init_transfers(conn)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS budgets (
+            category TEXT PRIMARY KEY,
+            amount INTEGER NOT NULL
+        )
+    """)
+    # transaksi rutin: dicatet otomatis tiap bulan di tanggal `day`, last_run = YYYYMM terakhir dicatet
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS recurring (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            day INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            account TEXT NOT NULL,
+            last_run TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -180,6 +212,46 @@ def init_balance_history(conn):
     """)
 
 
+def init_transfers(conn):
+    """
+    Tabel transfers: pindah duit antar akun. Disimpen terpisah dari transactions biar ga
+    kehitung jadi income/expense di laporan. Saldo kedua akun diupdate lewat trigger,
+    dicatet di balance_history dengan note 'transfer' (hapus transfer -> 'delete').
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS transfers (
+            id TEXT PRIMARY KEY,
+            created TEXT NOT NULL,
+            from_account TEXT NOT NULL,
+            to_account TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            note TEXT
+        )
+    """)
+    from_last = _LAST_BALANCE_SQL.format(acc="{t}.from_account")
+    to_last = _LAST_BALANCE_SQL.format(acc="{t}.to_account")
+    conn.executescript(f"""
+        DROP TRIGGER IF EXISTS trg_transfer_insert;
+        DROP TRIGGER IF EXISTS trg_transfer_delete;
+
+        CREATE TRIGGER trg_transfer_insert AFTER INSERT ON transfers
+        BEGIN
+            INSERT INTO balance_history (account, transaction_id, created, change, balance, note)
+            VALUES (NEW.from_account, NEW.id, NEW.created, -NEW.amount, {from_last.format(t="NEW")} - NEW.amount, 'transfer');
+            INSERT INTO balance_history (account, transaction_id, created, change, balance, note)
+            VALUES (NEW.to_account, NEW.id, NEW.created, NEW.amount, {to_last.format(t="NEW")} + NEW.amount, 'transfer');
+        END;
+
+        CREATE TRIGGER trg_transfer_delete AFTER DELETE ON transfers
+        BEGIN
+            INSERT INTO balance_history (account, transaction_id, created, change, balance, note)
+            VALUES (OLD.from_account, OLD.id, {_NOW_SQL}, OLD.amount, {from_last.format(t="OLD")} + OLD.amount, 'delete');
+            INSERT INTO balance_history (account, transaction_id, created, change, balance, note)
+            VALUES (OLD.to_account, OLD.id, {_NOW_SQL}, -OLD.amount, {to_last.format(t="OLD")} - OLD.amount, 'delete');
+        END;
+    """)
+
+
 def get_balance(conn, account):
     return conn.execute(f"SELECT {_LAST_BALANCE_SQL.format(acc='?')}", (account,)).fetchone()[0]
 
@@ -218,6 +290,173 @@ def insert_transaction(description, quantity, amount, tx_type, category, created
     balance = get_balance(conn, account)  # udah diupdate trigger
     conn.close()
     return tx_id, balance
+
+
+def insert_transfer(from_account, to_account, amount, created, note=None):
+    """Simpan transfer antar akun. Return (id, saldo akun asal, saldo akun tujuan) setelah transfer."""
+    tr_id = "t" + secrets.token_hex(7)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO transfers (id, created, from_account, to_account, amount, note) VALUES (?, ?, ?, ?, ?, ?)",
+        (tr_id, created, from_account, to_account, amount, note),
+    )
+    conn.commit()
+    balances = get_balance(conn, from_account), get_balance(conn, to_account)
+    conn.close()
+    return (tr_id, *balances)
+
+
+def find_record(record_id):
+    """
+    Cari transaksi atau transfer berdasarkan ID. Return (tabel, teks ringkas) atau None.
+    ID transfer diawali "t", selain itu dianggap transaksi.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT created, type, category, amount, description, account FROM transactions WHERE id = ?",
+        (record_id,),
+    ).fetchone()
+    if row:
+        conn.close()
+        created, tx_type, category, amount, description, account = row
+        return "transactions", f"{description} | {tx_type} | {category} | Rp{amount:,} | {account or '-'} | {created}"
+    row = conn.execute(
+        "SELECT created, from_account, to_account, amount, note FROM transfers WHERE id = ?", (record_id,),
+    ).fetchone()
+    conn.close()
+    if row:
+        created, from_account, to_account, amount, note = row
+        note_txt = f" | {note}" if note else ""
+        return "transfers", f"Transfer {from_account} -> {to_account} | Rp{amount:,}{note_txt} | {created}"
+    return None
+
+
+def last_record_id():
+    """ID transaksi/transfer yang terakhir dimasukin dan masih ada (buat /undo)."""
+    conn = sqlite3.connect(DB_PATH)
+    # balance_history urut waktu insert dan nyatet transaksi & transfer, jadi bisa dipakai buat
+    # nentuin mana yang paling baru di antara dua tabel itu
+    row = conn.execute(
+        "SELECT b.transaction_id FROM balance_history b "
+        "WHERE b.note IN ('transaction', 'transfer') AND ("
+        "  EXISTS (SELECT 1 FROM transactions t WHERE t.id = b.transaction_id) OR"
+        "  EXISTS (SELECT 1 FROM transfers r WHERE r.id = b.transaction_id)"
+        ") ORDER BY b.id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        # transaksi tanpa akun (data lama) ga ada di balance_history
+        row = conn.execute("SELECT id FROM transactions ORDER BY rowid DESC LIMIT 1").fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def delete_record(table, record_id):
+    """Hapus transaksi/transfer, saldo dibalikin sama trigger."""
+    conn = sqlite3.connect(DB_PATH)
+    # table cuma dari find_record ("transactions"/"transfers"), bukan dari input user
+    conn.execute(f"DELETE FROM {table} WHERE id = ?", (record_id,))
+    conn.commit()
+    conn.close()
+
+
+EDIT_FIELDS = ("amount", "desc", "qty", "category", "type", "account")
+
+
+def update_transaction(tx_id, field, raw):
+    """
+    Ubah satu kolom transaksi. Return pesan error (str) atau None kalau berhasil.
+    Saldo ikut disesuaiin sama trigger kalau amount/type/account berubah.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT type, category FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return "Transaksi ga ketemu (transfer ga bisa diedit, hapus terus bikin ulang)."
+    tx_type, category = row
+    if field == "amount":
+        value = clean_amount(raw)
+        if not value:
+            return "Amount ga valid."
+        column = "amount"
+    elif field == "qty":
+        if not raw.strip().isdigit() or int(raw) <= 0:
+            return "Qty harus angka."
+        column, value = "quantity", int(raw)
+    elif field == "desc":
+        column, value = "description", raw.strip()
+        if not value:
+            return "Deskripsi kosong."
+    elif field == "category":
+        value = next((c for c in CATEGORIES if c.lower() == raw.strip().lower()), None)
+        if value is None:
+            return "Kategori ga dikenal. Pilihan: " + ", ".join(CATEGORIES)
+        column, category = "category", value
+    elif field == "type":
+        value = raw.strip().lower()
+        if value not in TYPES:
+            return "Tipe harus expense atau income."
+        column, tx_type = "type", value
+    elif field == "account":
+        value = find_account(raw)
+        if value is None:
+            return "Akun ga dikenal. Pilihan: " + ", ".join(ACCOUNTS)
+        column = "account"
+    else:
+        return "Field yang bisa diedit: " + ", ".join(EDIT_FIELDS)
+    is_outlier = 1 if category == "Outlier" and tx_type == "expense" else 0
+    # column dari daftar di atas, bukan dari input user
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(f"UPDATE transactions SET {column} = ?, is_outlier = ? WHERE id = ?", (value, is_outlier, tx_id))
+    conn.commit()
+    conn.close()
+    return None
+
+
+def get_budgets():
+    conn = sqlite3.connect(DB_PATH)
+    budgets = dict(conn.execute("SELECT category, amount FROM budgets").fetchall())
+    conn.close()
+    return budgets
+
+
+def set_budget(category, amount):
+    """Set budget bulanan kategori. amount 0 = hapus budget."""
+    conn = sqlite3.connect(DB_PATH)
+    if amount:
+        conn.execute("INSERT OR REPLACE INTO budgets (category, amount) VALUES (?, ?)", (category, amount))
+    else:
+        conn.execute("DELETE FROM budgets WHERE category = ?", (category,))
+    conn.commit()
+    conn.close()
+
+
+def run_recurring(now=None):
+    """
+    Catet transaksi rutin yang udah jatuh tempo bulan ini dan belum dicatet.
+    Tanggal 29-31 di bulan yang lebih pendek dicatet di hari terakhir bulan itu.
+    Return list (chat_id, tx) yang barusan disimpen.
+    """
+    now = now or datetime.now()
+    month = now.strftime("%Y%m")
+    last_day = calendar.monthrange(now.year, now.month)[1]
+    conn = sqlite3.connect(DB_PATH)
+    due = conn.execute(
+        "SELECT id, chat_id, description, quantity, amount, type, category, account FROM recurring "
+        "WHERE (last_run IS NULL OR last_run < ?) AND MIN(day, ?) <= ?",
+        (month, last_day, now.day),
+    ).fetchall()
+    for rec_id, *_ in due:
+        conn.execute("UPDATE recurring SET last_run = ? WHERE id = ?", (month, rec_id))
+    conn.commit()
+    conn.close()
+    saved = []
+    for rec_id, chat_id, description, quantity, amount, tx_type, category, account in due:
+        tx = {
+            "description": description, "quantity": quantity, "amount": amount, "type": tx_type,
+            "category": category, "account": account, "created": now.strftime("%Y%m%d%H%M%S"),
+        }
+        saved.append((chat_id, tx))
+    return saved
 
 
 # ---------- Telegram API helper ----------
@@ -340,19 +579,24 @@ def category_keyboard():
 pending_add = {}
 
 
-def save_transaction(chat_id, tx):
+def save_transaction(chat_id, tx, header="Tersimpan ✅"):
     """Simpan transaksi dari dict lengkap (description, quantity, amount, type, category, created, account)."""
     tx_id, balance = insert_transaction(
         tx["description"], tx["quantity"], tx["amount"], tx["type"], tx["category"], tx["created"], tx["account"],
     )
-    send_message(
-        chat_id,
-        f"Tersimpan ✅\n"
+    text = (
+        f"{header}\n"
         f"{tx['description']} | {tx['type']} | {tx['category']}\n"
         f"Qty {tx['quantity']} | Rp{tx['amount']:,} | {tx['account']}\n"
         f"ID {tx_id} | {tx['created']}\n"
-        f"Saldo {tx['account']}: Rp{balance:,}",
+        f"Saldo {tx['account']}: Rp{balance:,}"
     )
+    # kalau kategorinya punya budget, sekalian kasih tau udah kepake berapa bulan ini
+    budgets = get_budgets()
+    if tx["type"] == "expense" and tx["category"] in budgets:
+        status = budget_status(fetch_report_data(), {tx["category"]: budgets[tx["category"]]})[0]
+        text += "\n\nBudget " + budget_line(status)
+    send_message(chat_id, text)
 
 
 def cmd_add(chat_id, args):
@@ -375,6 +619,21 @@ def handle_callback(cq):
 
     if not allowed(cq["from"]["id"]):
         answer_callback_query(cq["id"])
+        return
+    # konfirmasi /delete & /undo, ga ada hubungannya sama state /add
+    if data.startswith("del:"):
+        answer_callback_query(cq["id"])
+        record_id = data.split(":", 1)[1]
+        found = find_record(record_id)
+        if found is None:
+            edit_message_text(chat_id, message_id, "Udah ga ada (mungkin udah dihapus).")
+            return
+        delete_record(found[0], record_id)
+        edit_message_text(chat_id, message_id, f"Dihapus 🗑️\n{found[1]}\nSaldo udah dibalikin.")
+        return
+    if data == "delno":
+        answer_callback_query(cq["id"])
+        edit_message_text(chat_id, message_id, "Ga jadi dihapus.")
         return
     if data == "cancel":
         pending_add.pop(chat_id, None)
@@ -452,8 +711,10 @@ def cmd_balance(chat_id, args):
     conn = sqlite3.connect(DB_PATH)
     balances = get_balances(conn)
     rows = conn.execute(
-        "SELECT b.account, b.created, b.change, b.balance, b.note, t.description FROM balance_history b "
-        "LEFT JOIN transactions t ON t.id = b.transaction_id ORDER BY b.id DESC LIMIT ?",
+        "SELECT b.account, b.created, b.change, b.balance, b.note, "
+        "COALESCE(t.description, 'transfer ' || r.from_account || ' -> ' || r.to_account) FROM balance_history b "
+        "LEFT JOIN transactions t ON t.id = b.transaction_id "
+        "LEFT JOIN transfers r ON r.id = b.transaction_id ORDER BY b.id DESC LIMIT ?",
         (n,),
     ).fetchall()
     conn.close()
@@ -467,7 +728,7 @@ def cmd_balance(chat_id, args):
             when = str(created)
         # description None = transaksinya udah dihapus dari tabel transactions
         description = description or "(transaksi dihapus)"
-        label = description if note == "transaction" else f"({note}) {description}"
+        label = description if note in ("transaction", "transfer") else f"({note}) {description}"
         if note == "adjust":
             label = "(koreksi saldo)"
         lines.append(f"{when} | {account} | {change:+,} -> Rp{after:,} | {label}")
@@ -560,7 +821,239 @@ def cmd_insight(chat_id, args):
             send_message(chat_id, "Pakai: /insight atau /insight YYYYMM, contoh: /insight 202609")
             return
         year, month = parsed
-    send_message(chat_id, monthly_insight(fetch_report_data(), year, month))
+    send_message(chat_id, monthly_insight(fetch_report_data(), year, month, budgets=get_budgets()))
+
+
+def cmd_transfer(chat_id, args):
+    """/transfer <dari> <ke> <amount> [catatan], misal "/transfer mega dana 500000 topup"."""
+    from_account = find_account(args[0]) if len(args) >= 3 else None
+    to_account = find_account(args[1]) if len(args) >= 3 else None
+    amount = clean_amount(args[2]) if len(args) >= 3 else None
+    if from_account is None or to_account is None or not amount:
+        send_message(
+            chat_id,
+            "Pakai: /transfer <dari> <ke> <amount> [catatan]\n"
+            "Contoh: /transfer mega dana 500000 topup\n\n"
+            "Transfer ga dihitung sebagai income/expense. Biaya admin catet terpisah sebagai expense.\n"
+            "Akun: " + ", ".join(ACCOUNTS),
+        )
+        return
+    if from_account == to_account:
+        send_message(chat_id, "Akun asal dan tujuan sama.")
+        return
+    note = " ".join(args[3:]) or None
+    tr_id, from_balance, to_balance = insert_transfer(
+        from_account, to_account, amount, datetime.now().strftime("%Y%m%d%H%M%S"), note,
+    )
+    send_message(
+        chat_id,
+        f"Transfer tersimpan ✅\n{from_account} -> {to_account} | Rp{amount:,}\nID {tr_id}\n"
+        f"Saldo {from_account}: Rp{from_balance:,}\nSaldo {to_account}: Rp{to_balance:,}",
+    )
+
+
+def confirm_delete(chat_id, record_id):
+    found = find_record(record_id)
+    if found is None:
+        send_message(chat_id, f"ID {record_id} ga ketemu. Cek ID-nya lewat /last atau /search.")
+        return
+    keyboard = {"inline_keyboard": [[
+        {"text": "Ya, hapus", "callback_data": f"del:{record_id}"},
+        {"text": "Batal", "callback_data": "delno"},
+    ]]}
+    send_message(chat_id, f"Hapus ini?\n{found[1]}\nID {record_id}", keyboard)
+
+
+def cmd_undo(chat_id, args):
+    """Hapus transaksi/transfer yang terakhir dimasukin (pakai konfirmasi)."""
+    record_id = last_record_id()
+    if record_id is None:
+        send_message(chat_id, "Belum ada transaksi.")
+        return
+    confirm_delete(chat_id, record_id)
+
+
+def cmd_delete(chat_id, args):
+    """/delete <id> -> hapus transaksi/transfer tertentu (pakai konfirmasi)."""
+    if not args:
+        send_message(chat_id, "Pakai: /delete <id>. ID ada di /last, /search, atau pesan Tersimpan.")
+        return
+    confirm_delete(chat_id, args[0])
+
+
+def cmd_edit(chat_id, args):
+    """/edit <id> <field> <nilai>, misal "/edit r5d526bb03b79a7 amount 15000"."""
+    if len(args) < 3:
+        send_message(
+            chat_id,
+            "Pakai: /edit <id> <field> <nilai>\n"
+            "Field: " + ", ".join(EDIT_FIELDS) + "\n"
+            "Contoh: /edit r5d526bb03b79a7 amount 15000\n"
+            "/edit r5d526bb03b79a7 desc Nasi Padang",
+        )
+        return
+    tx_id, field, value = args[0], args[1].lower(), " ".join(args[2:])
+    error = update_transaction(tx_id, field, value)
+    if error:
+        send_message(chat_id, error)
+        return
+    found = find_record(tx_id)
+    send_message(chat_id, f"Diubah ✏️\n{found[1]}")
+
+
+def cmd_budget(chat_id, args):
+    """/budget -> status semua budget, /budget <kategori> <angka> -> set (0 = hapus)."""
+    if not args:
+        budgets = get_budgets()
+        if not budgets:
+            send_message(chat_id, "Belum ada budget. Set pakai: /budget Food 1500000")
+            return
+        status = budget_status(fetch_report_data(), budgets)
+        total_spent = sum(b["spent"] for b in status)
+        total_limit = sum(b["limit"] for b in status)
+        lines = ["Budget bulan ini:"] + [budget_line(b) for b in status]
+        lines.append(f"\nTotal: Rp{total_spent:,} / Rp{total_limit:,}")
+        send_message(chat_id, "\n".join(lines))
+        return
+    amount = clean_amount(args[-1]) if len(args) >= 2 else None
+    name = " ".join(args[:-1]).lower()
+    category = next((c for c in CATEGORIES if c.lower() == name and c != "Outlier"), None)
+    if category is None or amount is None:
+        send_message(
+            chat_id,
+            "Pakai: /budget <kategori> <angka> (0 = hapus budget)\n"
+            "Contoh: /budget Food 1500000\n\n"
+            "Kategori: " + ", ".join(c for c in CATEGORIES if c != "Outlier"),
+        )
+        return
+    set_budget(category, amount)
+    if not amount:
+        send_message(chat_id, f"Budget {category} dihapus.")
+        return
+    status = budget_status(fetch_report_data(), {category: amount})[0]
+    send_message(chat_id, f"Budget {category} di-set Rp{amount:,}/bulan\n" + budget_line(status))
+
+
+def cmd_recurring(chat_id, args):
+    """
+    /recurring                 -> daftar transaksi rutin
+    /recurring add <tgl>, ...  -> tambah, sisanya format cepat (akun wajib)
+    /recurring del <id>        -> hapus
+    """
+    sub = args[0].lower() if args else ""
+    usage = (
+        "Pakai:\n"
+        "/recurring - daftar transaksi rutin\n"
+        "/recurring add <tanggal>, deskripsi, amount, tipe, kategori, akun\n"
+        "/recurring del <id>\n\n"
+        "Contoh: /recurring add 25, Kos, 1500000, expense, Rent, mega\n"
+        "Dicatet otomatis tiap bulan di tanggal itu (29-31 di bulan pendek = hari terakhir)."
+    )
+    conn = sqlite3.connect(DB_PATH)
+    if sub == "add":
+        text = " ".join(args[1:])
+        day_raw, _, rest = text.partition(",")
+        quick = parse_quick_input(rest) if rest else None
+        if not day_raw.strip().isdigit() or not 1 <= int(day_raw) <= 31 or quick is None or quick[5] is None:
+            conn.close()
+            send_message(chat_id, "Format ga kebaca (akun wajib ditulis).\n\n" + usage)
+            return
+        day = int(day_raw)
+        description, quantity, amount, tx_type, category, account = quick
+        now = datetime.now()
+        # tanggalnya udah lewat bulan ini: dianggap udah dicatet manual, mulai bulan depan
+        already_due = min(day, calendar.monthrange(now.year, now.month)[1]) <= now.day
+        cur = conn.execute(
+            "INSERT INTO recurring (chat_id, day, description, quantity, amount, type, category, account, last_run) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, day, description, quantity, amount, tx_type, category, account,
+             now.strftime("%Y%m") if already_due else None),
+        )
+        conn.commit()
+        conn.close()
+        start = "mulai bulan depan (bulan ini catet manual kalau belum)" if already_due else "mulai bulan ini"
+        send_message(
+            chat_id,
+            f"Transaksi rutin #{cur.lastrowid} tersimpan ✅\n"
+            f"Tiap tanggal {day}: {description} | Rp{amount:,} | {tx_type} | {category} | {account}\n{start}",
+        )
+        return
+    if sub == "del":
+        rec_id = args[1] if len(args) > 1 else ""
+        deleted = conn.execute("DELETE FROM recurring WHERE id = ?", (rec_id,)).rowcount if rec_id.isdigit() else 0
+        conn.commit()
+        conn.close()
+        send_message(chat_id, f"Transaksi rutin #{rec_id} dihapus." if deleted else f"#{rec_id} ga ketemu.\n\n" + usage)
+        return
+    rows = conn.execute(
+        "SELECT id, day, description, amount, type, category, account, last_run FROM recurring ORDER BY day"
+    ).fetchall()
+    conn.close()
+    if sub or not rows:
+        send_message(chat_id, ("Belum ada transaksi rutin.\n\n" if not sub else "") + usage)
+        return
+    lines = ["Transaksi rutin:"]
+    for rec_id, day, description, amount, tx_type, category, account, last_run in rows:
+        sign = "-" if tx_type == "expense" else "+"
+        last = f" | terakhir {last_run[4:]}/{last_run[:4]}" if last_run else ""
+        lines.append(f"#{rec_id} tgl {day} | {sign}Rp{amount:,} | {category} | {account} | {description}{last}")
+    lines.append(f"\nTotal rutin per bulan: expense Rp{sum(r[3] for r in rows if r[4] == 'expense'):,}, "
+                 f"income Rp{sum(r[3] for r in rows if r[4] != 'expense'):,}")
+    send_message(chat_id, "\n".join(lines))
+
+
+def cmd_search(chat_id, args):
+    """/search <kata> -> transaksi yang deskripsinya mengandung kata itu: total per periode + 10 terakhir."""
+    keyword = " ".join(args).strip().lower()
+    if not keyword:
+        send_message(chat_id, "Pakai: /search <kata>, contoh: /search kopi")
+        return
+    matches = [r for r in fetch_report_data() if keyword in (r["description"] or "").lower()]
+    if not matches:
+        send_message(chat_id, f"Ga ada transaksi yang mengandung \"{keyword}\".")
+        return
+    now = datetime.now()
+    this_month = now.strftime("%Y%m")
+    last_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y%m")
+
+    def total(rows):
+        return sum(r["amount"] or 0 for r in rows), len(rows)
+
+    lines = [f"\"{keyword}\": {len(matches)} transaksi"]
+    for label, rows in (
+        ("Bulan ini", [r for r in matches if r["created_at"].strftime("%Y%m") == this_month]),
+        ("Bulan lalu", [r for r in matches if r["created_at"].strftime("%Y%m") == last_month]),
+        ("Semua", matches),
+    ):
+        amount, count = total([r for r in rows if r["type"] == "expense"])
+        if count:
+            lines.append(f"{label}: expense Rp{amount:,} ({count}x)")
+        amount, count = total([r for r in rows if r["type"] != "expense"])
+        if count:
+            lines.append(f"{label}: income Rp{amount:,} ({count}x)")
+    lines.append("\n10 terakhir:")
+    for r in sorted(matches, key=lambda x: x["created_at"], reverse=True)[:10]:
+        sign = "-" if r["type"] == "expense" else "+"
+        account_txt = f" | {r['account']}" if r["account"] else ""
+        lines.append(f"{r['created_at']:%Y-%m-%d} | {sign}Rp{r['amount'] or 0:,} | {r['category']}{account_txt} | "
+                     f"{r['description']} | {r['id']}")
+    send_message(chat_id, "\n".join(lines))
+
+
+def cmd_trend(chat_id, args):
+    """/trend [n] -> gambar income vs expense dan saving % n bulan terakhir (default 12)."""
+    try:
+        months = max(2, min(int(args[0]), 36)) if args else 12
+    except ValueError:
+        months = 12
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "trend.png")
+        count = generate_trend_png(fetch_report_data(), path, months)
+        if not count:
+            send_message(chat_id, "Belum ada data transaksi.")
+            return
+        send_file(chat_id, "sendPhoto", "photo", path, "image/png",
+                  caption=f"Tren {count} bulan terakhir (outlier ga dihitung)")
 
 
 COMMANDS = {
@@ -572,6 +1065,14 @@ COMMANDS = {
     "/report": cmd_report,
     "/weekly": cmd_weekly,
     "/insight": cmd_insight,
+    "/transfer": cmd_transfer,
+    "/undo": cmd_undo,
+    "/delete": cmd_delete,
+    "/edit": cmd_edit,
+    "/budget": cmd_budget,
+    "/recurring": cmd_recurring,
+    "/search": cmd_search,
+    "/trend": cmd_trend,
 }
 
 HELP_TEXT = (
@@ -583,7 +1084,15 @@ HELP_TEXT = (
     "/last [n] - lihat n transaksi terakhir\n"
     "/report - laporan Excel\n"
     "/weekly - gambar expense 7 hari terakhir\n"
-    "/insight [YYYYMM] - insight bulan ini/bulan tertentu\n\n"
+    "/insight [YYYYMM] - insight bulan ini/bulan tertentu\n"
+    "/trend [n] - gambar tren income/expense n bulan terakhir\n"
+    "/transfer <dari> <ke> <amount> - pindah saldo antar akun\n"
+    "/undo - hapus transaksi terakhir\n"
+    "/delete <id> - hapus transaksi/transfer\n"
+    "/edit <id> <field> <nilai> - ubah transaksi\n"
+    "/budget [kategori angka] - lihat/set budget bulanan\n"
+    "/recurring - transaksi rutin bulanan\n"
+    "/search <kata> - cari transaksi\n\n"
     "Atau insert cepat (akun di akhir opsional, kalau ga ditulis nanti ditanya):\n"
     "Nasi Bali, 2, 14000, expense, Food, Cash\n\n"
     "Akun: " + ", ".join(ACCOUNTS)
@@ -706,6 +1215,12 @@ def main():
     print(f"Bot jalan, DB: {DB_PATH}. Ctrl+C buat stop.")
     offset = None
     while True:
+        # dicek tiap putaran (paling lama ~50 detik sekali karena long polling)
+        try:
+            for chat_id, tx in run_recurring():
+                save_transaction(chat_id, tx, header="Transaksi rutin dicatet otomatis 🔁")
+        except Exception as e:
+            print(f"Error transaksi rutin: {e!r}")
         params = {"timeout": 50, "allowed_updates": ["message", "callback_query"]}
         if offset is not None:
             params["offset"] = offset
