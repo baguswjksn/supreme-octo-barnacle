@@ -64,6 +64,8 @@ def fetch_report_data():
             "description": r["description"],
             "created_at": parse_created(r["created"]),
             "is_outlier": r["is_outlier"],
+            # DB lama belum punya kolom account
+            "account": r["account"] if "account" in r.keys() else None,
         })
     return result
 

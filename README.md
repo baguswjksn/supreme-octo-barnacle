@@ -9,6 +9,12 @@ Bot Telegram pencatat keuangan pribadi. Transaksi expense/income disimpan di SQL
 - Laporan Excel: ringkasan bulanan (Income, Expense, Expense Ratio, Saving, Saving %) + detail transaksi per bulan
 - Gambar expense 7 hari terakhir: per hari dan per kategori
 - Insight bulanan dalam bentuk teks: perbandingan dengan bulan lalu, proyeksi akhir bulan, top kategori, dan lainnya
+- Gambar tren income, expense, dan saving % per bulan
+- Transfer antar akun yang tidak dihitung sebagai income/expense
+- Budget bulanan per kategori, dengan peringatan setiap kali transaksi disimpan
+- Transaksi rutin bulanan yang dicatat otomatis
+- Hapus, undo, dan edit transaksi langsung dari Telegram
+- Pencarian transaksi dari deskripsi
 - Laporan HTML lewat command line
 
 ## Persiapan
@@ -50,6 +56,17 @@ Database selalu `transactions.db` di folder yang sama dengan script, jadi script
 | `/report` | Kirim laporan Excel (.xlsx) |
 | `/weekly` | Kirim gambar expense 7 hari terakhir |
 | `/insight [YYYYMM]` | Insight bulan berjalan, atau bulan tertentu, misalnya `/insight 202609` |
+| `/trend [n]` | Gambar tren income vs expense dan saving % `n` bulan terakhir (default 12) |
+| `/transfer <dari> <ke> <amount> [catatan]` | Pindah saldo antar akun, misalnya `/transfer mega dana 500000 topup` |
+| `/undo` | Hapus transaksi atau transfer yang terakhir dimasukkan (ada tombol konfirmasi) |
+| `/delete <id>` | Hapus transaksi atau transfer tertentu (ada tombol konfirmasi) |
+| `/edit <id> <field> <nilai>` | Ubah transaksi. Field: `amount`, `desc`, `qty`, `category`, `type`, `account` |
+| `/budget` | Status semua budget bulan ini |
+| `/budget <kategori> <angka>` | Set budget bulanan kategori, `0` untuk menghapus |
+| `/recurring` | Daftar transaksi rutin |
+| `/recurring add <tanggal>, ...` | Tambah transaksi rutin, sisanya format cepat dengan akun wajib |
+| `/recurring del <id>` | Hapus transaksi rutin |
+| `/search <kata>` | Cari transaksi yang deskripsinya mengandung kata itu |
 
 Command lain atau format yang tidak dikenali dibalas dengan daftar bantuan.
 
@@ -64,6 +81,29 @@ Command lain atau format yang tidak dikenali dibalas dengan daftar bantuan.
 - 5 kategori terbesar beserta porsi dan perubahannya dibanding bulan lalu
 - Kategori yang naik dan turun paling banyak
 - Expense terbesar, jumlah hari tanpa expense, dan total outlier
+
+Kalau ada budget, `/insight` bulan berjalan juga menampilkan status budget.
+
+### Budget
+
+`/budget Food 1500000` menetapkan batas expense Food per bulan (outlier tidak dihitung). Setiap kali expense Food disimpan, balasan bot menyertakan pemakaian budget bulan ini:
+
+- ⚠️ kalau sudah 80% atau lebih
+- 🚨 kalau sudah lewat, beserta kelebihannya
+- peringatan proyeksi kalau dengan kecepatan belanja sekarang budget akan lewat di akhir bulan
+
+### Transaksi rutin
+
+```
+/recurring add 25, Kos, 1500000, expense, Rent, mega
+/recurring add 1, Internet, 300000, expense, Internet, mega
+```
+
+Bot mencatat transaksinya otomatis setiap bulan di tanggal itu dan mengirim pesan konfirmasi. Tanggal 29–31 di bulan yang lebih pendek dicatat di hari terakhir bulan itu. Kalau tanggalnya sudah lewat saat ditambahkan, pencatatan otomatis mulai bulan depan; catat manual untuk bulan ini kalau belum. Bot harus sedang jalan supaya pencatatan terjadi. Kalau bot mati di tanggal itu, transaksinya dicatat begitu bot jalan lagi (masih di bulan yang sama).
+
+### Hapus dan edit
+
+ID transaksi ada di pesan "Tersimpan", `/last`, dan `/search`. Hapus dan edit lewat bot ikut menyesuaikan saldo akun. Transfer tidak bisa diedit; hapus lalu buat ulang.
 
 ### Format cepat
 
@@ -113,7 +153,7 @@ Saldo dihitung lewat trigger SQLite di tabel `transactions`, jadi tetap benar wa
 
 Transaksi tanpa akun (data lama sebelum fitur akun ada) tidak ikut menghitung saldo, tapi tetap masuk laporan.
 
-Belum ada fitur transfer antar akun. Untuk sementara, catat sebagai expense di akun asal dan income di akun tujuan (keduanya akan ikut terhitung di laporan income/expense).
+Pindah uang antar akun dicatat dengan `/transfer` di tabel `transfers`, terpisah dari `transactions`, jadi tidak ikut terhitung di laporan income/expense. Saldo kedua akun diubah lewat trigger dan dicatat di `balance_history` dengan note `transfer`. Biaya admin transfer dicatat terpisah sebagai expense.
 
 ## Laporan dari command line
 
@@ -125,6 +165,8 @@ python g_weekly_e.py               # weekly_expense.png
 python g_weekly_e.py minggu.png    # PNG ke file tertentu
 python g_insight.py                # insight bulan berjalan
 python g_insight.py 202609         # insight bulan tertentu
+python g_trend.py                  # trend.png, 12 bulan terakhir
+python g_trend.py tren.png 6       # 6 bulan terakhir ke file tertentu
 ```
 
 Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan berjalan. Bulan di masa depan (biasanya salah input tanggal) dibiarkan polos.
@@ -154,7 +196,21 @@ Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan be
 | `created` | Waktu perubahan |
 | `change` | Perubahan saldo (`+` / `−`) |
 | `balance` | Saldo akun setelah perubahan |
-| `note` | `transaction`, `update`, `delete`, atau `adjust` |
+| `note` | `transaction`, `transfer`, `update`, `delete`, atau `adjust` |
+
+**`transfers`**: transfer antar akun.
+
+| Kolom | Isi |
+|---|---|
+| `id` | ID transfer, diawali `t` |
+| `created` | Waktu transfer |
+| `from_account` / `to_account` | Akun asal / tujuan |
+| `amount` | Nominal |
+| `note` | Catatan (opsional) |
+
+**`budgets`**: `category`, `amount` (batas per bulan).
+
+**`recurring`**: transaksi rutin. `day` tanggal pencatatan, kolom transaksinya sama dengan `transactions`, `chat_id` tujuan pesan konfirmasi, `last_run` bulan terakhir dicatat (`YYYYMM`).
 
 ## Struktur file
 
@@ -163,6 +219,7 @@ Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan be
 | `ingest_transaction.py` | Bot Telegram: input transaksi, akun dan saldo, command |
 | `g_last_r.py` | Laporan HTML dan Excel |
 | `g_weekly_e.py` | Gambar expense 7 hari terakhir |
-| `g_insight.py` | Insight bulanan (teks) |
+| `g_insight.py` | Insight bulanan (teks) dan status budget |
+| `g_trend.py` | Gambar tren bulanan |
 | `requirements.txt` | Dependency (`openpyxl`, `matplotlib`) |
 | `.env.example` | Template konfigurasi |
