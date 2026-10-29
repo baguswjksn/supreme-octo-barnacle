@@ -22,14 +22,18 @@ Command:
   /budget [kategori x]     -> lihat status budget bulan ini / set budget (0 = hapus)
   /recurring [add|del]     -> transaksi rutin bulanan yang dicatet otomatis
   /search <kata>           -> cari transaksi dari deskripsi
+  /backup                  -> kirim zip berisi semua tabel DB dalam format CSV
 
 Bot jalan terus (long polling) sampai di-stop pakai Ctrl+C.
 Pesan yang formatnya ga cocok dilewat (user dikasih tau lewat balasan).
 """
 
+import io
 import os
+import csv
 import json
 import time
+import zipfile
 import sqlite3
 import secrets
 import urllib.request
@@ -1056,6 +1060,44 @@ def cmd_trend(chat_id, args):
                   caption=f"Tren {count} bulan terakhir (outlier ga dihitung)")
 
 
+def export_csv_zip(zip_path):
+    """
+    Tulis semua tabel di DB ke zip_path, satu CSV per tabel. Tabel dibaca langsung dari
+    sqlite_master, jadi tabel baru otomatis ikut. Return {nama tabel: jumlah baris}.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    )]
+    counts = {}
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for table in tables:
+            cur = conn.execute(f'SELECT * FROM "{table}"')
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(col[0] for col in cur.description)
+            rows = cur.fetchall()
+            writer.writerows(rows)
+            # utf-8-sig biar Excel kebaca bener (deskripsi ada yang non-ASCII)
+            zf.writestr(f"{table}.csv", buf.getvalue().encode("utf-8-sig"))
+            counts[table] = len(rows)
+    conn.close()
+    return counts
+
+
+def cmd_backup(chat_id, args):
+    """/backup -> kirim zip berisi semua tabel DB dalam format CSV."""
+    now = datetime.now()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, f"backup_{now:%Y%m%d_%H%M}.zip")
+        counts = export_csv_zip(path)
+        summary = "\n".join(f"{t}.csv: {n:,} baris" for t, n in counts.items())
+        send_file(
+            chat_id, "sendDocument", "document", path, "application/zip",
+            caption=f"Backup semua data per {now:%Y-%m-%d %H:%M}\n{summary}",
+        )
+
+
 COMMANDS = {
     "/add": cmd_add,
     "/cancel": cmd_cancel,
@@ -1073,6 +1115,7 @@ COMMANDS = {
     "/recurring": cmd_recurring,
     "/search": cmd_search,
     "/trend": cmd_trend,
+    "/backup": cmd_backup,
 }
 
 HELP_TEXT = (
@@ -1092,7 +1135,8 @@ HELP_TEXT = (
     "/edit <id> <field> <nilai> - ubah transaksi\n"
     "/budget [kategori angka] - lihat/set budget bulanan\n"
     "/recurring - transaksi rutin bulanan\n"
-    "/search <kata> - cari transaksi\n\n"
+    "/search <kata> - cari transaksi\n"
+    "/backup - export semua data ke CSV (zip)\n\n"
     "Atau insert cepat (akun di akhir opsional, kalau ga ditulis nanti ditanya):\n"
     "Nasi Bali, 2, 14000, expense, Food, Cash\n\n"
     "Akun: " + ", ".join(ACCOUNTS)

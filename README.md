@@ -67,6 +67,7 @@ Database selalu `transactions.db` di folder yang sama dengan script, jadi script
 | `/recurring add <tanggal>, ...` | Tambah transaksi rutin, sisanya format cepat dengan akun wajib |
 | `/recurring del <id>` | Hapus transaksi rutin |
 | `/search <kata>` | Cari transaksi yang deskripsinya mengandung kata itu |
+| `/backup` | Kirim file `.zip` berisi semua data, satu CSV per tabel (`transactions.csv`, `balance_history.csv`, `transfers.csv`, `budgets.csv`, `recurring.csv`) |
 
 Command lain atau format yang tidak dikenali dibalas dengan daftar bantuan.
 
