@@ -3,3 +3,5 @@ transactions.db
 .env
 __pycache__/
 transactions.backup-20261027.db
+nihongo.sqlite
+nihongo.sqlite-*
