@@ -228,7 +228,7 @@ Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan be
 
 `nihongo.php` adalah aplikasi web terpisah untuk belajar bahasa Jepang ala Duolingo. Isinya satu file PHP, dan datanya disimpan di SQLite (`nihongo.sqlite`, dibuat dan diisi materi otomatis saat pertama dibuka).
 
-- 8 unit, 22 pelajaran: hiragana, katakana, salam, angka, kata benda, kata sifat, dan kalimat dasar
+- 8 unit, 23 pelajaran: hiragana, katakana, salam, angka, kata benda, kata sifat, dan kalimat dasar
 - Jenis soal: pilihan ganda, menulis romaji, mendengar (Web Speech API), memasangkan, dan menyusun kalimat
 - Hati (berkurang tiap salah, terisi lagi 1 setiap 20 menit), XP, streak harian, dan target harian
 - Latihan untuk mengulang kata yang sering salah, liga XP mingguan, tabel huruf, dan profil
