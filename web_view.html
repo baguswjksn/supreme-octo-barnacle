@@ -1,0 +1,1289 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keuangan</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #6f6d68;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --ring: rgba(11, 11, 11, 0.10);
+    --wash: rgba(11, 11, 11, 0.05);
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --muted-mark: #898781;
+    --band: rgba(137, 135, 129, 0.20);
+    --seq-0: #f0efec;
+    --seq-1: #cde2fb;
+    --seq-2: #9ec5f4;
+    --seq-3: #6da7ec;
+    --seq-4: #3987e5;
+    --seq-5: #256abf;
+    --seq-6: #104281;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --delta-good: #006300;
+    --delta-bad: #b42f2f;
+    --tip-bg: #0b0b0b;
+    --tip-ink: #f0efec;
+    --tip-ink-2: #c3c2b7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #f0efec;
+      --ink-2: #c3c2b7;
+      --ink-3: #9d9b92;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --ring: rgba(255, 255, 255, 0.10);
+      --wash: rgba(255, 255, 255, 0.06);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --band: rgba(137, 135, 129, 0.24);
+      --seq-0: #2c2c2a;
+      --seq-1: #104281;
+      --seq-2: #1c5cab;
+      --seq-3: #2a78d6;
+      --seq-4: #5598e7;
+      --seq-5: #86b6ef;
+      --seq-6: #b7d3f6;
+      --delta-good: #0ca30c;
+      --delta-bad: #e66767;
+      --tip-bg: #f0efec;
+      --tip-ink: #0b0b0b;
+      --tip-ink-2: #52514e;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --ink-3: #9d9b92;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --ring: rgba(255, 255, 255, 0.10);
+    --wash: rgba(255, 255, 255, 0.06);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --band: rgba(137, 135, 129, 0.24);
+    --seq-0: #2c2c2a;
+    --seq-1: #104281;
+    --seq-2: #1c5cab;
+    --seq-3: #2a78d6;
+    --seq-4: #5598e7;
+    --seq-5: #86b6ef;
+    --seq-6: #b7d3f6;
+    --delta-good: #0ca30c;
+    --delta-bad: #e66767;
+    --tip-bg: #f0efec;
+    --tip-ink: #0b0b0b;
+    --tip-ink-2: #52514e;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+
+  .top {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 24px;
+    min-height: 56px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--ring);
+  }
+  .brand { font-weight: 600; font-size: 15px; }
+  .tabs { display: flex; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; }
+  .tabs a {
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: var(--ink-2);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .tabs a:hover { background: var(--wash); }
+  .tabs a[aria-current="page"] { color: var(--ink); font-weight: 600; background: var(--wash); }
+  .actions { display: flex; align-items: center; gap: 8px; }
+  .stamp { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+  .btn {
+    padding: 6px 10px;
+    border: 1px solid var(--ring);
+    border-radius: 8px;
+    background: var(--surface);
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--wash); }
+
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 20px 24px 64px; }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-bottom: 16px;
+  }
+  .seg { display: inline-flex; max-width: 100%; border: 1px solid var(--ring); border-radius: 8px; overflow-x: auto; background: var(--surface); }
+  .seg button { flex: none; padding: 6px 10px; border: 0; background: none; color: var(--ink-2); white-space: nowrap; }
+  .seg button + button { border-left: 1px solid var(--ring); }
+  .seg button:hover { background: var(--wash); }
+  .seg button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--wash); }
+  .field { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .field input[type="date"], .field select, .search {
+    padding: 5px 8px;
+    border: 1px solid var(--ring);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    min-width: 0;
+  }
+  .note { color: var(--ink-3); font-size: 12px; }
+
+  .grid { display: grid; gap: 16px; margin-bottom: 16px; }
+  .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .g-hero { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+  .g-forecast { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card {
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: 0 0 0 1px var(--ring);
+    padding: 16px 18px;
+    min-width: 0;
+  }
+  .card h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .card .sub { margin: 2px 0 12px; color: var(--ink-3); font-size: 12px; }
+  h2 { margin: 28px 0 12px; font-size: 16px; font-weight: 600; }
+  h2:first-child { margin-top: 0; }
+
+  .tile { padding: 12px 14px; }
+  .tile .label { color: var(--ink-2); font-size: 12px; }
+  .tile .value { font-size: 22px; font-weight: 600; line-height: 1.3; margin-top: 2px; }
+  .tile .delta { font-size: 12px; margin-top: 2px; color: var(--ink-3); }
+  .delta.up-good { color: var(--delta-good); }
+  .delta.up-bad { color: var(--delta-bad); }
+  .hero-value { font-size: 44px; font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; margin: 6px 0 4px; overflow-wrap: anywhere; }
+  .stack { display: grid; gap: 10px; }
+
+  .insights { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+  .insight { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+  .insight strong { font-weight: 600; }
+  .insight p { margin: 0; color: var(--ink-2); font-size: 13px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .badge i {
+    display: inline-grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    font: 700 11px/1 system-ui, sans-serif;
+    color: #fff;
+    background: var(--muted-mark);
+  }
+  .badge.good i { background: var(--good); }
+  .badge.warning i { background: var(--warning); color: #0b0b0b; }
+  .badge.critical i { background: var(--critical); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 8px; color: var(--ink-2); font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+  .legend i.line { height: 2px; width: 14px; border-radius: 1px; }
+  .legend i.dash { height: 0; width: 14px; border-radius: 0; border-top: 2px dashed; background: none !important; }
+
+  .chart { width: 100%; position: relative; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .scroll-x { overflow-x: auto; }
+  .tick { font-size: 11px; font-variant-numeric: tabular-nums; fill: var(--ink-3); }
+  .endlabel {
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--ink);
+    font-variant-numeric: tabular-nums;
+    stroke: var(--surface);
+    stroke-width: 3px;
+    paint-order: stroke;
+    pointer-events: none;
+  }
+  .hit { fill: transparent; cursor: default; outline: none; }
+  .hit:focus-visible, g:focus-visible > .hit { fill: var(--wash); }
+  .mark-group:hover .hit { fill: var(--wash); }
+  .cell:hover { stroke: var(--ink); stroke-width: 1.5px; }
+  svg:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+
+  .seq { display: flex; align-items: center; gap: 2px; margin-top: 8px; color: var(--ink-3); font-size: 11px; }
+  .seq i { width: 16px; height: 8px; display: inline-block; }
+  .seq span { margin: 0 6px; font-variant-numeric: tabular-nums; }
+
+  .hbars { display: grid; gap: 8px; }
+  .hbar {
+    display: grid;
+    grid-template-columns: minmax(84px, 150px) minmax(40px, 1fr) minmax(84px, auto);
+    gap: 10px;
+    align-items: center;
+    border-radius: 6px;
+  }
+  .hbar:hover { background: var(--wash); }
+  .hbar .name { overflow-wrap: anywhere; line-height: 1.25; }
+  .hbar .track { height: 12px; }
+  .hbar .fill { height: 100%; min-width: 2px; background: var(--series-1); border-radius: 0 4px 4px 0; }
+  .hbar .val { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hbar .val small { color: var(--ink-3); margin-left: 6px; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th:first-child, td:first-child { padding-left: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.nowrap { white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  th button { all: unset; cursor: pointer; }
+  th button:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+  .twin { margin-top: 10px; color: var(--ink-2); font-size: 12px; }
+  .twin summary { cursor: pointer; color: var(--ink-3); }
+  .twin .table-wrap { margin-top: 8px; max-height: 320px; overflow-y: auto; }
+  .twin table { color: var(--ink); }
+  .pill {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 1px var(--ring);
+    color: var(--ink-2);
+    font-size: 11px;
+  }
+
+  .meter { height: 8px; border-radius: 4px; background: var(--seq-0); overflow: hidden; min-width: 60px; }
+  .meter div { height: 100%; background: var(--series-1); border-radius: 0 4px 4px 0; }
+  .meter div.warning { background: var(--warning); }
+  .meter div.critical { background: var(--critical); }
+
+  .sim { display: grid; gap: 12px; }
+  .sim input[type="range"] { width: 100%; accent-color: var(--series-1); }
+  .sim-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .sim-out { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+
+  .data-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 12px; }
+  .search { width: min(320px, 100%); }
+  .pager { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink-2); }
+  .pager .btn[disabled] { opacity: 0.45; cursor: default; }
+
+  #view.loading { opacity: 0.55; transition: opacity 0.15s; }
+  .error { padding: 12px 14px; border-radius: 10px; box-shadow: 0 0 0 1px var(--critical); margin-bottom: 16px; }
+  .empty { color: var(--ink-3); padding: 12px 0; }
+
+  #tip {
+    position: fixed;
+    z-index: 20;
+    max-width: 280px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--tip-bg);
+    color: var(--tip-ink);
+    font-size: 12px;
+    pointer-events: none;
+  }
+  #tip .t { color: var(--tip-ink-2); margin-bottom: 2px; }
+  #tip .r { display: flex; align-items: center; gap: 6px; }
+  #tip .r b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  #tip .r span { color: var(--tip-ink-2); }
+  #tip .r i { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+  #tip .n { color: var(--tip-ink-2); margin-top: 2px; }
+
+  @media (max-width: 860px) {
+    .g2, .g-hero, .g-forecast { grid-template-columns: minmax(0, 1fr); }
+    .top { flex-wrap: wrap; padding: 8px 16px; gap: 4px 12px; }
+    .tabs { order: 3; flex-basis: 100%; }
+    .actions { margin-left: auto; }
+    .stamp { display: none; }
+    .wrap { padding: 16px 16px 48px; }
+    .hero-value { font-size: 36px; }
+    .insight { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .hbar { grid-template-columns: minmax(72px, 110px) minmax(30px, 1fr) minmax(76px, auto); gap: 8px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #view.loading { transition: none; } }
+  @media print {
+    .top, .filters, #tip { display: none !important; }
+    .card { box-shadow: none; border: 1px solid #ccc; break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">Keuangan</div>
+  <nav class="tabs" aria-label="Halaman">
+    <a href="#ringkasan" data-tab="ringkasan">Ringkasan</a>
+    <a href="#pengeluaran" data-tab="pengeluaran">Pengeluaran</a>
+    <a href="#analisis" data-tab="analisis">Analisis lanjut</a>
+    <a href="#data" data-tab="data">Data</a>
+  </nav>
+  <div class="actions">
+    <span class="stamp" id="stamp"></span>
+    <button class="btn" id="reload" type="button">Muat ulang</button>
+    <button class="btn" id="theme" type="button" aria-label="Ganti tema terang atau gelap">Tema</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="filters" id="filters" aria-label="Filter periode"></section>
+  <div id="error"></div>
+  <main id="view"></main>
+</div>
+<div id="tip" hidden></div>
+<noscript>Halaman ini butuh JavaScript.</noscript>
+
+<script>
+'use strict';
+
+/* ---------- Helper DOM ---------- */
+const $ = (sel, root = document) => root.querySelector(sel);
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k === 'text') el.textContent = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'style' || k.includes('-')) el.setAttribute(k, v);
+    else if (k in el) el[k] = v;
+    else el.setAttribute(k, v);
+  }
+  kids.flat().forEach(c => { if (c != null && c !== false) el.append(c); });
+  return el;
+}
+
+function s(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null) continue;
+    if (k === 'text') el.textContent = v;
+    else el.setAttribute(k, v);
+  }
+  kids.flat().forEach(c => { if (c != null) el.append(c); });
+  return el;
+}
+
+/* ---------- Format angka ---------- */
+const nf = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 0 });
+const nf1 = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+const rp = v => v == null ? '–' : (v < 0 ? '−Rp' : 'Rp') + nf.format(Math.abs(Math.round(v)));
+const pct = v => v == null ? '–' : nf1.format(v) + '%';
+function compact(v) {
+  const a = Math.abs(v), sign = v < 0 ? '−' : '';
+  if (a >= 1e6) return sign + new Intl.NumberFormat('id-ID', { maximumFractionDigits: a >= 1e7 ? 0 : 1 }).format(a / 1e6) + ' jt';
+  if (a >= 1e3) return sign + nf.format(a / 1e3) + ' rb';
+  return sign + nf.format(a);
+}
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+const DAYS = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+function dateLabel(iso) {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
+  return `${d} ${MONTHS[m - 1]} ${y}`;
+}
+const pad = n => String(n).padStart(2, '0');
+const isoDate = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/* ---------- Tooltip ---------- */
+const tip = $('#tip');
+function showTip(x, y, title, rows, note) {
+  tip.replaceChildren();
+  if (title) tip.append(h('div', { class: 't', text: title }));
+  (rows || []).forEach(r => {
+    const row = h('div', { class: 'r' });
+    if (r.color) row.append(h('i', { style: `background:${r.color}` }));
+    row.append(h('b', { text: r.value }));
+    if (r.label) row.append(h('span', { text: r.label }));
+    tip.append(row);
+  });
+  if (note) tip.append(h('div', { class: 'n', text: note }));
+  tip.hidden = false;
+  const box = tip.getBoundingClientRect();
+  const left = Math.min(x + 14, window.innerWidth - box.width - 8);
+  const top = y + box.height + 20 > window.innerHeight ? y - box.height - 12 : y + 14;
+  tip.style.left = `${Math.max(8, left)}px`;
+  tip.style.top = `${Math.max(8, top)}px`;
+}
+const hideTip = () => { tip.hidden = true; };
+function hover(el, fn) {
+  el.addEventListener('pointermove', e => fn(e.clientX, e.clientY));
+  el.addEventListener('pointerleave', hideTip);
+  el.addEventListener('focus', () => { const b = el.getBoundingClientRect(); fn(b.left + b.width / 2, b.top); });
+  el.addEventListener('blur', hideTip);
+}
+
+/* ---------- Komponen ---------- */
+function card(title, sub, ...body) {
+  return h('section', { class: 'card' }, title && h('h3', { text: title }), sub ? h('p', { class: 'sub', text: sub }) : h('div', { style: 'height:10px' }), body);
+}
+
+function table(headers, rows, opts = {}) {
+  const head = h('tr', null, headers.map(c => h('th', { class: c.num ? 'num' : null, text: c.label ?? c })));
+  const body = rows.map(row => h('tr', null, row.map((v, i) => {
+    const col = headers[i];
+    const cell = (v !== null && typeof v === 'object' && !(v instanceof Node)) ? v : { text: v };
+    const td = h('td', { class: [col.num ? 'num' : '', col.nowrap ? 'nowrap' : ''].join(' ').trim() || null });
+    if (cell instanceof Node) td.append(cell);
+    else if (cell.node) td.append(cell.node);
+    else td.textContent = cell.text ?? '–';
+    if (cell.pill) td.append(h('span', { class: 'pill', text: cell.pill }));
+    return td;
+  })));
+  return h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, head), h('tbody', null, body)));
+}
+
+const twin = (headers, rows) => h('details', { class: 'twin' }, h('summary', { text: 'Lihat tabel' }), table(headers, rows));
+
+function badge(level) {
+  const map = { good: ['✓', 'Baik'], warning: ['!', 'Perhatian'], critical: ['!', 'Kritis'], info: ['i', 'Info'] };
+  const [icon, label] = map[level] || map.info;
+  return h('span', { class: `badge ${level}` }, h('i', { text: icon, 'aria-hidden': 'true' }), label);
+}
+
+function insightList(items) {
+  if (!items.length) return h('p', { class: 'empty', text: 'Belum ada kesimpulan untuk periode ini.' });
+  return h('ul', { class: 'insights' }, items.map(i => h('li', { class: 'insight' },
+    badge(i.level),
+    h('div', null, h('strong', { text: i.title }), h('p', { text: i.detail })),
+  )));
+}
+
+function tile(label, value, deltaText, deltaClass) {
+  return h('div', { class: 'card tile' },
+    h('div', { class: 'label', text: label }),
+    h('div', { class: 'value', text: value }),
+    deltaText ? h('div', { class: `delta ${deltaClass || ''}`, text: deltaText }) : null,
+  );
+}
+
+function delta(cur, prev, upIsGood, unit) {
+  if (prev == null || cur == null) return [null, null];
+  if (unit === 'poin') {
+    const d = cur - prev;
+    return [`${d >= 0 ? '▲' : '▼'} ${nf1.format(Math.abs(d))} poin`, deltaClass(d, upIsGood)];
+  }
+  if (!prev) return [null, null];
+  const d = (cur - prev) / Math.abs(prev) * 100;
+  return [`${d >= 0 ? '▲' : '▼'} ${nf.format(Math.abs(d))}% vs sebelumnya`, deltaClass(d, upIsGood)];
+}
+const deltaClass = (d, upIsGood) => Math.abs(d) < 0.05 ? '' : (d > 0) === upIsGood ? 'up-good' : 'up-bad';
+
+function legend(items) {
+  return h('div', { class: 'legend' }, items.map(i => h('span', null,
+    h('i', { class: i.kind === 'line' ? 'line' : i.kind === 'dash' ? 'dash' : null, style: i.kind === 'dash' ? `border-color:${i.color}` : `background:${i.color}` }),
+    i.name)));
+}
+
+function hbars(items, opts = {}) {
+  const max = Math.max(...items.map(i => i.value), 1);
+  return h('div', { class: 'hbars' }, items.map(i => {
+    const row = h('div', { class: 'hbar', tabindex: opts.tips ? 0 : null },
+      h('div', { class: 'name', text: i.label }),
+      h('div', { class: 'track' }, h('div', { class: 'fill', style: `width:${Math.max(i.value / max * 100, 0.5)}%` })),
+      h('div', { class: 'val' }, i.text, i.small ? h('small', { text: i.small }) : null),
+    );
+    if (opts.tips && i.tip) hover(row, (x, y) => showTip(x, y, i.label, i.tip, i.note));
+    return row;
+  }));
+}
+
+/* Chart digambar setelah elemennya nempel di halaman, biar lebarnya kebaca. */
+let pending = [];
+function chartBox(draw) {
+  const el = h('div', { class: 'chart' });
+  pending.push(() => draw(el, Math.max(el.clientWidth, 260)));
+  return el;
+}
+function flushCharts() {
+  const jobs = pending;
+  pending = [];
+  jobs.forEach(job => job());
+}
+
+function niceScale(min, max, count = 4) {
+  if (max === min) max = min + 1;
+  const raw = (max - min) / count;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const low = Math.floor(min / step) * step;
+  const high = Math.ceil(max / step) * step;
+  const ticks = [];
+  for (let v = low; v <= high + step / 2; v += step) ticks.push(v);
+  return { low, high, ticks };
+}
+
+const barPath = (x, y, w, bh, r = 4) => {
+  const rr = Math.min(r, bh, w / 2);
+  return `M${x} ${y + bh}V${y + rr}Q${x} ${y} ${x + rr} ${y}H${x + w - rr}Q${x + w} ${y} ${x + w} ${y + rr}V${y + bh}Z`;
+};
+
+/* Kolom per kelompok: satu atau dua seri, hover per kelompok. */
+function columns(el, width, { groups, series, fmt = compact, height = 260, tickFmt = compact, labelLast = true }) {
+  const m = { l: 44, r: series.length > 1 ? 38 : 8, t: 18, b: 24 };
+  const pw = width - m.l - m.r, ph = height - m.t - m.b;
+  const max = Math.max(...groups.flatMap(g => g.values), 1);
+  const { high, ticks } = niceScale(0, max);
+  const y = v => m.t + ph - v / high * ph;
+  const svg = s('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img' });
+  ticks.forEach(t => {
+    svg.append(s('line', { x1: m.l, x2: width - m.r, y1: y(t), y2: y(t), style: `stroke:var(${t === 0 ? '--axis' : '--grid'})` }));
+    svg.append(s('text', { x: m.l - 6, y: y(t) + 4, 'text-anchor': 'end', class: 'tick', text: tickFmt(t) }));
+  });
+  const band = pw / groups.length;
+  const k = series.length;
+  const bw = Math.max(3, Math.min(24, (band - 6 - 2 * (k - 1)) / k));
+  const gw = bw * k + 2 * (k - 1);
+  const every = Math.max(1, Math.ceil(groups.length / Math.floor(pw / 46)));
+  groups.forEach((g, i) => {
+    const gx = m.l + band * i + (band - gw) / 2;
+    const group = s('g', { class: 'mark-group', tabindex: groups.length <= 40 ? 0 : null, 'aria-label': `${g.label}: ${g.values.map((v, j) => `${series[j].name} ${rp(v)}`).join(', ')}` });
+    const hit = s('rect', { x: m.l + band * i, y: m.t, width: band, height: ph, class: 'hit' });
+    group.append(hit);
+    g.values.forEach((v, j) => {
+      if (v > 0) group.append(s('path', {
+        d: barPath(gx + j * (bw + 2), y(v), bw, y(0) - y(v)),
+        style: `fill:${series[j].color};opacity:${g.partial ? 0.5 : 1};pointer-events:none`,
+      }));
+    });
+    hover(group, (x, yy) => showTip(x, yy, g.label,
+      g.values.map((v, j) => ({ color: series[j].color, value: fmt(v), label: series[j].name })),
+      g.note || (g.partial ? 'Bulan belum lengkap' : null)));
+    svg.append(group);
+    if (i % every === 0 || (i === groups.length - 1 && groups.length <= 14)) {
+      svg.append(s('text', { x: m.l + band * i + band / 2, y: height - 7, 'text-anchor': 'middle', class: 'tick', text: g.short ?? g.label }));
+    }
+    if (labelLast && i === groups.length - 1 && series.length === 2) {
+      const lastX = gx + bw;
+      if (g.values[0] > 0) svg.append(s('text', { x: lastX, y: y(g.values[0]) - 5, 'text-anchor': 'end', class: 'endlabel', text: compact(g.values[0]) }));
+      if (g.values[1] > 0) svg.append(s('text', { x: lastX + 2, y: y(g.values[1]) - 5, 'text-anchor': 'start', class: 'endlabel', text: compact(g.values[1]) }));
+    }
+  });
+  el.replaceChildren(svg);
+}
+
+/* Garis dengan crosshair: pointer atau panah kiri/kanan. */
+function lines(el, width, { labels, series, band, fmt = compact, tickFmt = compact, height = 240, min, max, note, bare = false }) {
+  const m = bare ? { l: 4, r: 4, t: 6, b: 22 } : { l: 48, r: 56, t: 14, b: 24 };
+  const pw = width - m.l - m.r, ph = height - m.t - m.b;
+  const all = series.flatMap(x => x.values).concat(band ? [...band.low, ...band.high] : []).filter(v => v != null);
+  const { low, high, ticks } = niceScale(min ?? Math.min(0, ...all), max ?? Math.max(...all, 1));
+  const n = labels.length;
+  const x = i => m.l + (n > 1 ? i / (n - 1) * pw : pw / 2);
+  const y = v => m.t + ph - (v - low) / (high - low) * ph;
+  const svg = s('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', tabindex: 0, 'aria-label': 'Grafik garis. Pakai panah kiri dan kanan untuk membaca nilai.' });
+  if (!bare) ticks.forEach(t => {
+    svg.append(s('line', { x1: m.l, x2: width - m.r, y1: y(t), y2: y(t), style: `stroke:var(${t === 0 ? '--axis' : '--grid'})` }));
+    svg.append(s('text', { x: m.l - 6, y: y(t) + 4, 'text-anchor': 'end', class: 'tick', text: tickFmt(t) }));
+  });
+  const every = bare ? Math.max(n - 1, 1) : Math.max(1, Math.ceil(n / Math.floor(pw / 46)));
+  labels.forEach((l, i) => {
+    if (i % every !== 0) return;
+    const anchor = bare ? (i === 0 ? 'start' : 'end') : 'middle';
+    svg.append(s('text', { x: x(i), y: height - 7, 'text-anchor': anchor, class: 'tick', text: l }));
+  });
+  if (band) {
+    const top = band.high.map((v, i) => `${i ? 'L' : 'M'}${x(i)} ${y(v)}`).join('');
+    const bottom = band.low.map((v, i) => [i, v]).reverse().map(([i, v]) => `L${x(i)} ${y(v)}`).join('');
+    svg.append(s('path', { d: `${top}${bottom}Z`, style: 'fill:var(--band);stroke:none' }));
+  }
+  series.forEach(ser => {
+    let d = '';
+    let started = false;
+    ser.values.forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      d += `${started ? 'L' : 'M'}${x(i)} ${y(v)}`;
+      started = true;
+    });
+    if (ser.area) {
+      const idx = ser.values.map((v, i) => v == null ? -1 : i).filter(i => i >= 0);
+      if (idx.length) svg.append(s('path', { d: `${d}L${x(idx[idx.length - 1])} ${y(Math.max(low, 0))}L${x(idx[0])} ${y(Math.max(low, 0))}Z`, style: `fill:${ser.color};opacity:.1;stroke:none` }));
+    }
+    svg.append(s('path', { d, style: `fill:none;stroke:${ser.color};stroke-width:2;stroke-linejoin:round;stroke-linecap:round;${ser.dash ? 'stroke-dasharray:5 5;' : ''}` }));
+    if (ser.endLabel) {
+      const lastIdx = ser.values.map((v, i) => v == null ? -1 : i).filter(i => i >= 0).pop();
+      if (lastIdx != null) {
+        svg.append(s('circle', { cx: x(lastIdx), cy: y(ser.values[lastIdx]), r: 4, style: `fill:${ser.color};stroke:var(--surface);stroke-width:2` }));
+        svg.append(s('text', { x: x(lastIdx) + 8, y: y(ser.values[lastIdx]) + 4, class: 'endlabel', text: ser.endLabel(ser.values[lastIdx]) }));
+      }
+    }
+  });
+  const cross = s('line', { y1: m.t, y2: m.t + ph, style: 'stroke:var(--axis);display:none' });
+  svg.append(cross);
+  const dots = series.map(ser => { const c = s('circle', { r: 4, style: `fill:${ser.color};stroke:var(--surface);stroke-width:2;display:none` }); svg.append(c); return c; });
+  const overlay = s('rect', { x: m.l, y: m.t, width: pw, height: ph, class: 'hit' });
+  svg.append(overlay);
+  let current = -1;
+  const place = (i, cx, cy) => {
+    current = i;
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i));
+    cross.style.display = '';
+    const rows = [];
+    series.forEach((ser, j) => {
+      const v = ser.values[i];
+      dots[j].style.display = v == null ? 'none' : '';
+      if (v != null) {
+        dots[j].setAttribute('cx', x(i)); dots[j].setAttribute('cy', y(v));
+        rows.push({ color: ser.color, value: fmt(v), label: ser.name });
+      }
+    });
+    if (band) rows.push({ value: `${fmt(band.low[i])} – ${fmt(band.high[i])}`, label: band.name });
+    showTip(cx, cy, labels[i], rows, note ? note(i) : null);
+  };
+  const clear = () => { cross.style.display = 'none'; dots.forEach(d => { d.style.display = 'none'; }); hideTip(); current = -1; };
+  overlay.addEventListener('pointermove', e => {
+    const box = svg.getBoundingClientRect();
+    const px = (e.clientX - box.left) * (width / box.width);
+    const i = Math.max(0, Math.min(n - 1, Math.round((px - m.l) / (pw / Math.max(n - 1, 1)))));
+    place(i, e.clientX, e.clientY);
+  });
+  overlay.addEventListener('pointerleave', clear);
+  svg.addEventListener('blur', clear);
+  svg.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const next = current < 0 ? n - 1 : Math.max(0, Math.min(n - 1, current + (e.key === 'ArrowRight' ? 1 : -1)));
+    const box = svg.getBoundingClientRect();
+    place(next, box.left + x(next) * (box.width / width), box.top + m.t);
+  });
+  el.replaceChildren(svg);
+}
+
+/* Warna heatmap: 6 kelas kuantil dari nilai yang bukan nol. */
+function seqScale(values) {
+  const nz = values.filter(v => v > 0).sort((a, b) => a - b);
+  const cuts = [1, 2, 3, 4, 5].map(i => nz[Math.min(nz.length - 1, Math.floor(nz.length * i / 6))] ?? 0);
+  const cls = v => v <= 0 ? 0 : 1 + cuts.filter(c => v > c).length;
+  return { cls, min: nz[0] ?? 0, max: nz[nz.length - 1] ?? 0 };
+}
+function seqLegend(scale, fmt = compact) {
+  return h('div', { class: 'seq' },
+    h('span', { text: fmt(scale.min), style: 'margin-left:0' }),
+    [1, 2, 3, 4, 5, 6].map(i => h('i', { style: `background:var(--seq-${i})` })),
+    h('span', { text: fmt(scale.max) }));
+}
+
+function heatmap(el, width, { rows, cols, values, tipFor, cell = 22, labelWidth = 104, minCell = 16 }) {
+  const top = 20;
+  const cw = Math.max(minCell, Math.min(44, (width - labelWidth) / cols.length));
+  const scale = seqScale(values.flat());
+  const w = labelWidth + cw * cols.length, ht = top + cell * rows.length;
+  const svg = s('svg', { viewBox: `0 0 ${w} ${ht}`, role: 'img', style: `min-width:${w}px;max-width:${w}px` });
+  const every = Math.max(1, Math.ceil(30 / cw));
+  cols.forEach((c, j) => {
+    if (j % every === 0) svg.append(s('text', { x: labelWidth + cw * j + cw / 2, y: 12, 'text-anchor': 'middle', class: 'tick', text: c }));
+  });
+  rows.forEach((r, i) => {
+    svg.append(s('text', { x: labelWidth - 8, y: top + cell * i + cell / 2 + 4, 'text-anchor': 'end', class: 'tick', text: r }));
+    values[i].forEach((v, j) => {
+      const rect = s('rect', {
+        x: labelWidth + cw * j + 1, y: top + cell * i + 1, width: cw - 2, height: cell - 2, rx: 2,
+        class: 'cell', style: `fill:var(--seq-${scale.cls(v)})`,
+      });
+      hover(rect, (x, y) => showTip(x, y, tipFor(i, j, v).title, [{ value: tipFor(i, j, v).value }]));
+      svg.append(rect);
+    });
+  });
+  el.replaceChildren(h('div', { class: 'scroll-x' }, svg), seqLegend(scale));
+}
+
+/* Kalender harian: kolom per minggu, Senin di atas. */
+function calendarHeat(el, width, days) {
+  const scale = seqScale(days.map(d => d.total));
+  const left = 28, top = 18;
+  const weeks = Math.ceil((days.length + days[0].weekday) / 7);
+  const size = Math.max(11, Math.min(26, (width - left) / weeks));
+  const w = left + size * weeks, ht = top + size * 7;
+  const svg = s('svg', { viewBox: `0 0 ${w} ${ht}`, role: 'img', style: `min-width:${w}px;max-width:${w}px` });
+  ['Sen', '', 'Rab', '', 'Jum', '', 'Min'].forEach((d, i) => {
+    if (d) svg.append(s('text', { x: 0, y: top + size * i + size * 0.75, class: 'tick', text: d }));
+  });
+  let lastMonth = -1, lastX = -40;
+  days.forEach((d, i) => {
+    const idx = i + days[0].weekday;
+    const col = Math.floor(idx / 7), row = idx % 7;
+    const date = new Date(d.date + 'T00:00:00');
+    if (date.getMonth() !== lastMonth && row === 0) {
+      const lx = left + col * size;
+      if (lx - lastX >= 30) { svg.append(s('text', { x: lx, y: 11, class: 'tick', text: MONTHS[date.getMonth()] })); lastX = lx; }
+      lastMonth = date.getMonth();
+    }
+    const rect = s('rect', {
+      x: left + col * size + 1, y: top + row * size + 1, width: size - 2, height: size - 2, rx: 2,
+      class: 'cell', style: `fill:var(--seq-${scale.cls(d.total)})`,
+    });
+    hover(rect, (x, y) => showTip(x, y, `${DAYS[d.weekday]}, ${dateLabel(d.date)}`, [{ value: d.total ? rp(d.total) : 'Tanpa expense' }]));
+    svg.append(rect);
+  });
+  el.replaceChildren(h('div', { class: 'scroll-x' }, svg), seqLegend(scale));
+}
+
+/* ---------- State & data ---------- */
+const COLOR = { expense: 'var(--series-1)', income: 'var(--series-2)', saving: 'var(--series-3)', muted: 'var(--muted-mark)' };
+const TABS = ['ringkasan', 'pengeluaran', 'analisis', 'data'];
+const PRESETS = [['30', '30 hari'], ['90', '90 hari'], ['183', '6 bulan'], ['365', '12 bulan'], ['ytd', 'Tahun ini'], ['all', 'Semua']];
+const state = {
+  tab: 'ringkasan', preset: '365', from: '', to: '', account: '', outliers: false,
+  dash: null, adv: null, tables: null,
+  data: { table: 'transactions', q: '', page: 0, sort: 'created', dir: -1 },
+};
+const PAGE_SIZE = 50;
+
+async function getJSON(url) {
+  const res = await fetch(url);
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
+}
+function showError(message) {
+  $('#error').replaceChildren(message ? h('div', { class: 'error', text: message }) : '');
+}
+
+function range() {
+  const now = new Date();
+  const to = isoDate(now);
+  if (state.preset === 'custom') return { from: state.from, to: state.to || to };
+  if (state.preset === 'all') return { from: '', to };
+  if (state.preset === 'ytd') return { from: `${now.getFullYear()}-01-01`, to };
+  const start = new Date(now);
+  start.setDate(start.getDate() - Number(state.preset) + 1);
+  return { from: isoDate(start), to };
+}
+
+async function loadDash() {
+  const { from, to } = range();
+  const q = new URLSearchParams({ from, to });
+  if (state.account) q.set('account', state.account);
+  if (state.outliers) q.set('outliers', '1');
+  state.dash = await getJSON(`/api/overview?${q}`);
+}
+
+async function refresh(all = false) {
+  const view = $('#view');
+  view.classList.add('loading');
+  try {
+    showError('');
+    const jobs = [];
+    if (all || !state.dash) jobs.push(loadDash());
+    if (all || !state.adv) jobs.push(getJSON('/api/advanced').then(d => { state.adv = d; }));
+    if (state.tab === 'data' && (all || !state.tables)) jobs.push(getJSON('/api/tables').then(d => { state.tables = d; }));
+    await Promise.all(jobs);
+    $('#stamp').textContent = `Diperbarui ${new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+    render();
+  } catch (e) {
+    showError(`Gagal memuat data: ${e.message}`);
+  } finally {
+    view.classList.remove('loading');
+  }
+}
+
+async function applyFilter() {
+  const view = $('#view');
+  view.classList.add('loading');
+  try {
+    showError('');
+    await loadDash();
+    render();
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    view.classList.remove('loading');
+  }
+}
+
+/* ---------- Filter ---------- */
+function renderFilters() {
+  const box = $('#filters');
+  const show = state.tab === 'ringkasan' || state.tab === 'pengeluaran';
+  box.hidden = !show;
+  if (!show) return;
+  const d = state.dash;
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Rentang tanggal' }, PRESETS.map(([key, label]) =>
+    h('button', {
+      type: 'button', text: label, 'aria-pressed': String(state.preset === key),
+      onclick: () => { state.preset = key; applyFilter(); },
+    })));
+  const dateInput = (label, key) => h('label', { class: 'field' }, label, h('input', {
+    type: 'date', value: state.preset === 'custom' ? state[key] : (key === 'from' ? d?.start : d?.end) || '',
+    onchange: e => { state.from = state.from || d?.start; state.to = state.to || d?.end; state[key] = e.target.value; state.preset = 'custom'; applyFilter(); },
+  }));
+  const account = h('select', {
+    'aria-label': 'Akun',
+    onchange: e => { state.account = e.target.value; applyFilter(); },
+  },
+    h('option', { value: '', text: 'Semua akun' }),
+    (d?.accounts || []).map(a => h('option', { value: a, text: a })),
+    d ? h('option', { value: d.no_account_value, text: 'Tanpa akun (data lama)' }) : null);
+  account.value = state.account;
+  const outlier = h('label', { class: 'field' }, h('input', {
+    type: 'checkbox', checked: state.outliers,
+    onchange: e => { state.outliers = e.target.checked; applyFilter(); },
+  }), 'Hitung outlier');
+  box.replaceChildren(seg, dateInput('Dari', 'from'), dateInput('Sampai', 'to'), h('label', { class: 'field' }, account), outlier);
+}
+
+/* ---------- Halaman: Ringkasan ---------- */
+function viewRingkasan() {
+  const d = state.dash, a = state.adv;
+  const k = d.kpi, p = d.prev;
+  const bal = a.balances;
+  const expenseLabel = state.outliers ? 'Expense (termasuk outlier)' : 'Expense';
+
+  const hero = h('section', { class: 'card' },
+    h('h3', { text: 'Saldo saat ini' }),
+    h('div', { class: 'hero-value', text: rp(bal.total) }),
+    h('p', { class: 'sub', text: `${bal.accounts.length} akun. Tidak terpengaruh filter.` }),
+    bal.history.length >= 3 ? chartBox((el, w) => lines(el, w, {
+      labels: bal.history.map(x => dateLabel(x.date)), height: 96, bare: true,
+      series: [{ name: 'Total saldo', color: COLOR.expense, values: bal.history.map(x => x.total), area: true }],
+      min: Math.min(...bal.history.map(x => x.total)) * 0.98,
+      fmt: rp,
+    })) : null,
+  );
+  const accounts = card('Saldo per akun', bal.opened_at ? `Dicatat sejak ${dateLabel(bal.opened_at)}` : null,
+    bal.accounts.length
+      ? hbars(bal.accounts.map(x => ({ label: x.account, value: Math.max(x.balance, 0), text: rp(x.balance) })))
+      : h('p', { class: 'empty', text: 'Belum ada saldo. Isi lewat /setbalance di bot.' }));
+
+  const [dExp, cExp] = delta(k.expense, p?.expense, false);
+  const [dInc, cInc] = delta(k.income, p?.income, true);
+  const [dSav, cSav] = delta(k.saving, p?.saving, true);
+  const [dPct, cPct] = delta(k.saving_pct, p?.saving_pct, true, 'poin');
+  const [dDay, cDay] = delta(k.daily, p?.daily, false);
+  const kpis = h('div', { class: 'kpis' },
+    tile(expenseLabel, rp(k.expense), dExp, cExp),
+    tile('Income', rp(k.income), dInc, cInc),
+    tile('Saving', rp(k.saving), dSav, cSav),
+    tile('Saving rate', pct(k.saving_pct), dPct, cPct),
+    tile('Rata-rata expense per hari', rp(k.daily), dDay, cDay),
+    tile('Outlier', rp(k.outlier), `${nf.format(k.outlier_count)} transaksi`),
+  );
+
+  const insights = card('Kesimpulan periode ini', `${dateLabel(d.start)} sampai ${dateLabel(d.end)}, ${nf.format(k.count)} transaksi`, insightList(d.insights));
+
+  if (!d.monthly.length) return [h('div', { class: 'grid g-hero' }, hero, accounts), kpis, insights];
+
+  const monthlyRows = [...d.monthly].reverse().map(m => [
+    { text: m.label, pill: m.partial ? 'belum lengkap' : null }, rp(m.expense), rp(m.income), rp(m.saving), pct(m.saving_pct),
+  ]);
+  const monthlyHead = ['Bulan', { label: 'Expense', num: 1 }, { label: 'Income', num: 1 }, { label: 'Saving', num: 1 }, { label: 'Saving %', num: 1 }];
+  const compare = card('Expense dan income per bulan', d.monthly.some(m => m.partial) ? 'Warna pudar = bulan belum lengkap' : null,
+    legend([{ name: 'Expense', color: COLOR.expense }, { name: 'Income', color: COLOR.income }]),
+    chartBox((el, w) => columns(el, w, {
+      groups: d.monthly.map(m => ({ label: m.label, short: m.short, partial: m.partial, values: [m.expense, m.income] })),
+      series: [{ name: 'Expense', color: COLOR.expense }, { name: 'Income', color: COLOR.income }],
+      fmt: rp,
+    })),
+    twin(monthlyHead, monthlyRows));
+  const cumulative = card('Saving kumulatif', 'Income dikurangi expense, dijumlahkan sejak awal periode',
+    chartBox((el, w) => lines(el, w, {
+      labels: d.monthly.map(m => m.short), height: 260, fmt: rp,
+      series: [{ name: 'Saving kumulatif', color: COLOR.saving, values: d.monthly.map(m => m.cumulative), area: true, endLabel: compact }],
+    })),
+    twin(['Bulan', { label: 'Saving', num: 1 }, { label: 'Kumulatif', num: 1 }], [...d.monthly].reverse().map(m => [m.label, rp(m.saving), rp(m.cumulative)])));
+
+  return [h('div', { class: 'grid g-hero' }, hero, accounts), kpis, insights,
+    h('div', { style: 'height:16px' }), h('div', { class: 'grid g2' }, compare, cumulative)];
+}
+
+/* ---------- Halaman: Pengeluaran ---------- */
+function viewPengeluaran() {
+  const d = state.dash;
+  if (!d.categories.length) return [h('p', { class: 'empty', text: 'Tidak ada expense di periode ini.' })];
+
+  const categories = card('Per kategori', 'Dibanding periode sebelumnya saat kursor di atas baris',
+    hbars(d.categories.map(c => ({
+      label: c.category, value: c.total, text: compact(c.total), small: `${nf.format(c.share)}%`,
+      tip: [{ value: rp(c.total), label: `${nf.format(c.count)} transaksi` }, { value: rp(c.prev), label: 'periode sebelumnya' }],
+    })), { tips: true }));
+
+  const hm = d.category_heatmap;
+  const heat = card('Kategori per bulan', 'Warna lebih gelap = lebih besar, dibagi 6 kelas',
+    chartBox((el, w) => heatmap(el, w, {
+      rows: hm.categories, cols: hm.months.map(m => m.short.split(' ')[0]), values: hm.values,
+      tipFor: (i, j, v) => ({ title: `${hm.categories[i]}, ${hm.months[j].label}`, value: rp(v) }),
+    })),
+    twin(['Kategori', ...hm.months.map(m => ({ label: m.short, num: 1 }))], hm.categories.map((c, i) => [c, ...hm.values[i].map(v => compact(v))])));
+
+  const weekdays = card('Rata-rata per hari dalam seminggu', 'Total dibagi jumlah hari itu di periode ini',
+    chartBox((el, w) => columns(el, w, {
+      groups: d.weekdays.map(x => ({ label: x.name, short: x.day, values: [x.avg] })),
+      series: [{ name: 'Rata-rata', color: COLOR.expense }], fmt: rp, height: 220,
+    })),
+    twin(['Hari', { label: 'Rata-rata', num: 1 }, { label: 'Total', num: 1 }], d.weekdays.map(x => [x.name, rp(x.avg), rp(x.total)])));
+
+  const hours = d.hours;
+  const hourCard = card('Jam pencatatan', `Mendekati jam belanja, karena dicatat saat pesan dikirim. ${nf.format(hours.skipped)} transaksi tanpa jam tidak dihitung.`,
+    chartBox((el, w) => heatmap(el, w, {
+      rows: hours.days, cols: [...Array(24).keys()].map(pad), values: hours.values, labelWidth: 34, minCell: 14,
+      tipFor: (i, j, v) => ({ title: `${DAYS[i]}, ${pad(j)}.00`, value: rp(v) }),
+    })),
+    twin(['Hari', ...[...Array(24).keys()].map(i => ({ label: pad(i), num: 1 }))], hours.days.map((day, i) => [day, ...hours.values[i].map(v => v ? compact(v) : '')])));
+
+  const cal = card('Kalender expense', 'Maksimal 53 minggu terakhir dari periode',
+    chartBox((el, w) => calendarHeat(el, w, d.calendar)),
+    twin(['Tanggal', { label: 'Expense', num: 1 }], d.calendar.filter(x => x.total).reverse().map(x => [dateLabel(x.date), rp(x.total)])));
+
+  const z = d.sizes;
+  const dist = card('Ukuran transaksi', `Median ${rp(z.median)}, rata-rata ${rp(z.mean)}. 20% transaksi terbesar = ${nf.format(z.top20_share)}% total expense.`,
+    chartBox((el, w) => columns(el, w, {
+      groups: z.bins.map(b => ({ label: b.label, short: b.label.replace(' rb', ''), values: [b.count], note: `Total ${rp(b.total)}` })),
+      series: [{ name: 'Transaksi', color: COLOR.expense }], fmt: v => nf.format(v), tickFmt: v => nf.format(v), height: 220,
+    })),
+    twin(['Rentang', { label: 'Transaksi', num: 1 }, { label: 'Total', num: 1 }], z.bins.map(b => [b.label, nf.format(b.count), rp(b.total)])));
+
+  const items = card('Paling banyak menyerap uang', 'Deskripsi yang sama digabung',
+    table(['Deskripsi', 'Kategori', { label: 'Kali', num: 1 }, { label: 'Rata-rata', num: 1 }, { label: 'Total', num: 1 }],
+      d.top_items.map(i => [i.description, i.category, nf.format(i.count), rp(i.avg), rp(i.total)])));
+  const biggest = card('Transaksi terbesar', 'Tanpa kost',
+    table([{ label: 'Tanggal', nowrap: 1 }, 'Deskripsi', 'Kategori', { label: 'Jumlah', num: 1 }],
+      d.biggest.map(t => [dateLabel(t.date), { text: t.description, pill: t.is_outlier ? 'outlier' : null }, t.category, rp(t.amount)])));
+
+  return [
+    h('div', { class: 'grid g2' }, categories, heat),
+    h('div', { class: 'grid' }, cal),
+    h('div', { class: 'grid g2' }, weekdays, hourCard),
+    h('div', { class: 'grid g2' }, dist, biggest),
+    h('div', { class: 'grid' }, items),
+  ];
+}
+
+/* ---------- Halaman: Analisis lanjut ---------- */
+function simulator(sim) {
+  const select = h('select', { 'aria-label': 'Kategori yang dikurangi' }, sim.categories.map(c => h('option', { value: c.category, text: `${c.category} (${compact(c.monthly)}/bulan)` })));
+  const slider = h('input', { type: 'range', min: 0, max: 50, step: 5, value: 20, 'aria-label': 'Persen pengurangan' });
+  const percent = h('strong', { text: '20%' });
+  const out = h('div', { class: 'sim-out' });
+  const update = () => {
+    const cat = sim.categories.find(c => c.category === select.value);
+    if (!cat) return;
+    const cut = Number(slider.value) / 100;
+    const save = cat.monthly * cut;
+    const burn = sim.burn - save;
+    const before = sim.income ? (sim.income - sim.burn) / sim.income * 100 : null;
+    const after = sim.income ? (sim.income - burn) / sim.income * 100 : null;
+    percent.textContent = `${slider.value}%`;
+    out.replaceChildren(
+      tile('Hemat per bulan', rp(save)),
+      tile('Hemat per tahun', rp(save * 12)),
+      tile('Saving rate', pct(after), before == null ? null : `dari ${pct(before)}`),
+      tile('Saldo cukup untuk', burn > 0 ? `${nf1.format(sim.balance / burn)} bulan` : '–', sim.burn ? `dari ${nf1.format(sim.balance / sim.burn)} bulan` : null),
+    );
+  };
+  select.addEventListener('change', update);
+  slider.addEventListener('input', update);
+  update();
+  return h('div', { class: 'sim' }, h('div', { class: 'sim-row' }, select, h('span', null, 'dikurangi ', percent)), slider, out);
+}
+
+function viewAnalisis() {
+  const a = state.adv;
+  const out = [card('Kesimpulan jangka panjang', `Dari seluruh riwayat sampai ${dateLabel(a.today)}. Filter tanggal tidak berlaku di halaman ini.`, insightList(a.insights))];
+
+  const f = a.forecast;
+  if (f) {
+    const days = f.curve.map(c => String(c.day));
+    const projection = f.curve.map(c => c.day < f.day ? null : c.day === f.day ? f.spent : f.spent + (f.projection - f.spent) * (c.day - f.day) / Math.max(f.days_in_month - f.day, 1));
+    const chart = card(`Laju expense ${f.label}`, `Dibanding pola ${f.pattern_months} bulan lengkap terakhir`,
+      legend([
+        { name: 'Bulan ini', color: COLOR.expense, kind: 'line' },
+        { name: 'Proyeksi', color: COLOR.expense, kind: 'dash' },
+        { name: 'Median bulan lalu', color: COLOR.muted, kind: 'line' },
+        { name: 'Rentang wajar (P25–P75)', color: 'var(--band)' },
+      ]),
+      chartBox((el, w) => lines(el, w, {
+        labels: days, height: 280, fmt: rp,
+        band: { low: f.curve.map(c => c.p25), high: f.curve.map(c => c.p75), name: 'rentang wajar' },
+        series: [
+          { name: 'Median bulan lalu', color: COLOR.muted, values: f.curve.map(c => c.p50) },
+          { name: 'Proyeksi', color: COLOR.expense, values: projection, dash: true },
+          { name: 'Bulan ini', color: COLOR.expense, values: f.curve.map(c => c.actual), endLabel: compact },
+        ],
+      })),
+      twin(['Tanggal', { label: 'Bulan ini', num: 1 }, { label: 'P25', num: 1 }, { label: 'Median', num: 1 }, { label: 'P75', num: 1 }],
+        f.curve.map(c => [c.day, c.actual == null ? '–' : rp(c.actual), rp(c.p25), rp(c.p50), rp(c.p75)])));
+    const vs = f.vs_baseline;
+    const facts = h('div', { class: 'stack' },
+      tile('Proyeksi akhir bulan', rp(f.projection), `Rentang ${rp(f.low)} – ${rp(f.high)}`),
+      tile(`Sudah keluar (${f.day} dari ${f.days_in_month} hari)`, rp(f.spent), f.mape != null ? `Akurasi cara ini: rata-rata meleset ${nf1.format(f.mape)}% di tanggal yang sama` : null),
+      tile(`Normal (rata-rata ${f.baseline_months} bulan)`, rp(f.baseline), vs == null ? null : `Proyeksi ${vs >= 0 ? '▲' : '▼'} ${nf.format(Math.abs(vs))}% dari normal`, vs == null ? '' : vs > 0 ? 'up-bad' : 'up-good'),
+      f.remaining_daily ? tile('Sisa per hari sesuai proyeksi', rp(f.remaining_daily)) : null,
+    );
+    out.push(h('h2', { text: 'Bulan ini' }), h('div', { class: 'grid g-forecast' }, chart, facts));
+  }
+
+  const r = a.runway, t = a.trend;
+  if (r) {
+    const series = t.series;
+    out.push(h('h2', { text: 'Ketahanan keuangan' }), h('div', { class: 'kpis' },
+      tile('Saldo cukup untuk', r.runway == null ? '–' : `${nf1.format(r.runway)} bulan`, `Tanpa income, ${nf1.format(r.runway_with_outlier ?? 0)} bulan jika outlier berulang`),
+      tile('Pengeluaran rutin per bulan', rp(r.burn), `Rata-rata ${r.basis_months} bulan, tanpa outlier`),
+      tile('Sisa per bulan', rp(r.net), 'Income dikurangi expense dan outlier'),
+      tile('Stabilitas income', r.income_cv == null ? '–' : `±${nf.format(r.income_cv)}%`, `${r.months_no_income} dari ${r.income_months} bulan tanpa income`),
+    ));
+    out.push(h('div', { class: 'grid g2' },
+      card('Saving rate 3 bulanan', 'Dihitung per 3 bulan karena tanggal gajian bergeser antarbulan',
+        chartBox((el, w) => lines(el, w, {
+          labels: series.map(x => x.short), fmt: pct, tickFmt: v => `${nf.format(v)}%`,
+          series: [{ name: 'Saving rate 3 bulanan', color: COLOR.saving, values: series.map(x => x.rolling_saving_pct), endLabel: v => `${nf.format(v)}%` }],
+        })),
+        twin(['Bulan', { label: 'Saving rate 3 bulanan', num: 1 }], [...series].reverse().map(x => [x.label, pct(x.rolling_saving_pct)]))),
+      card('Expense bulanan', `${t.clear ? `Tren ${t.slope > 0 ? 'naik' : 'turun'} ${rp(Math.abs(t.slope))} per bulan` : 'Belum ada tren yang jelas'} (R² ${nf1.format(t.r2)}). Perkiraan ${t.next.label}: ${compact(t.next.low)}–${compact(t.next.high)}.`,
+        chartBox((el, w) => lines(el, w, {
+          labels: series.map(x => x.short), fmt: rp,
+          series: [{ name: 'Expense', color: COLOR.expense, values: series.map(x => x.expense), area: true, endLabel: compact }],
+        })),
+        twin(['Bulan', { label: 'Expense', num: 1 }, { label: 'Outlier', num: 1 }, { label: 'Income', num: 1 }], [...series].reverse().map(x => [x.label, rp(x.expense), rp(x.outlier), rp(x.income)]))),
+    ));
+  }
+
+  const rec = a.recurring;
+  out.push(h('h2', { text: 'Pola belanja' }));
+  const pay = a.payday;
+  out.push(h('div', { class: 'grid g2' },
+    card('Setelah gajian', pay ? `Rata-rata expense per hari, dari ${pay.cycles} siklus gaji. Kost dan outlier tidak dihitung.` : null,
+      pay ? hbars(pay.bins.map(b => ({ label: b.label, value: b.daily, text: rp(b.daily) })))
+        : h('p', { class: 'empty', text: 'Siklus gaji yang tercatat belum cukup.' })),
+    card('Biaya rutin', `Muncul minimal 75% bulan terakhir. Total sekitar ${rp(rec.fixed_monthly)} per bulan.`,
+      rec.fixed.length ? table(['Nama', { label: 'Bulan', num: 1 }, { label: 'Per transaksi', num: 1 }, { label: 'Per bulan', num: 1 }],
+        rec.fixed.map(x => [x.description, `${x.months}/${x.window}`, rp(x.amount), rp(x.monthly)]))
+        : h('p', { class: 'empty', text: 'Belum terdeteksi.' })),
+  ));
+  out.push(h('div', { class: 'grid' }, card('Kebiasaan yang menumpuk', `Dibeli minimal 3 kali per bulan selama ${rec.habit_months} bulan terakhir`,
+    rec.habits.length ? table(['Barang', 'Kategori', { label: 'Per bulan', num: 1 }, { label: 'Rata-rata', num: 1 }, { label: 'Biaya per bulan', num: 1 }, { label: 'Setara per tahun', num: 1 }],
+      rec.habits.map(x => [x.description, x.category, `${nf1.format(x.per_month)}x`, rp(x.avg), rp(x.monthly), rp(x.yearly)]))
+      : h('p', { class: 'empty', text: 'Belum terdeteksi.' }))));
+
+  const inf = a.inflation;
+  out.push(h('h2', { text: 'Harga barang' }));
+  out.push(h('div', { class: 'grid' }, card('Perubahan harga makanan dan minuman',
+    inf.basket_change == null ? 'Data belum cukup.' : `Gabungan ${inf.items_count} barang: ${inf.basket_change >= 0 ? 'naik' : 'turun'} ${nf1.format(Math.abs(inf.basket_change))}%. Median harga satuan sepertiga pembelian pertama dibanding sepertiga terakhir.`,
+    inf.items.length ? table(['Barang', { label: 'Dibeli', num: 1 }, { label: 'Harga awal', num: 1 }, { label: 'Harga terbaru', num: 1 }, { label: 'Perubahan', num: 1 }],
+      inf.items.map(x => [x.description, `${x.purchases}x`, rp(x.before), rp(x.after), `${x.change >= 0 ? '+' : '−'}${nf.format(Math.abs(x.change))}%`])) : null)));
+
+  const an = a.anomalies;
+  out.push(h('h2', { text: 'Yang tidak biasa' }));
+  out.push(h('div', { class: 'grid g2' },
+    card('Hari dengan expense tidak biasa', `${an.days_found} hari dalam ${an.window_days} hari terakhir, jauh di atas hari biasa (robust z-score ≥ 3,5, tanpa kost)`,
+      an.days.length ? table([{ label: 'Tanggal', nowrap: 1 }, { label: 'Total', num: 1 }, 'Terbesar'],
+        an.days.map(x => [dateLabel(x.date), rp(x.total), `${x.top} (${compact(x.top_amount)})`]))
+        : h('p', { class: 'empty', text: 'Tidak ada.' })),
+    card('Kategori yang melonjak', 'Minimal 1,5x median 6 bulan sebelumnya dan selisih Rp100 rb ke atas',
+      an.spikes.length ? table(['Bulan', 'Kategori', { label: 'Jumlah', num: 1 }, { label: 'Biasanya', num: 1 }],
+        an.spikes.map(x => [{ text: x.label, pill: x.partial ? 'berjalan' : null }, x.category, rp(x.amount), rp(x.median)]))
+        : h('p', { class: 'empty', text: 'Tidak ada.' })),
+  ));
+
+  out.push(h('h2', { text: 'Rencana' }));
+  const budgetRows = a.budget.map(b => {
+    const level = b.pct >= 100 ? 'critical' : b.pct >= 80 ? 'warning' : '';
+    return [
+      b.category, rp(b.median), rp(b.spent),
+      { node: h('div', { class: 'meter', role: 'img', 'aria-label': `${nf.format(b.pct)}% dari saran` }, h('div', { class: level, style: `width:${Math.min(b.pct, 100)}%` })) },
+      `${nf.format(b.pct)}%`, rp(b.suggested), `/budget ${b.category} ${b.suggested}`,
+    ];
+  });
+  out.push(h('div', { class: 'grid' },
+    card('Saran budget', 'Persentil 75 dari 6 bulan terakhir, dibulatkan ke atas. Kolom terakhir bisa disalin ke bot.',
+      a.budget.length ? table(['Kategori', { label: 'Median', num: 1 }, { label: 'Bulan ini', num: 1 }, 'Terpakai', { label: '% saran', num: 1 }, { label: 'Saran', num: 1 }, { label: 'Command', nowrap: 1 }], budgetRows)
+        : h('p', { class: 'empty', text: 'Data belum cukup.' })),
+    card('Simulasi berhemat', 'Memakai rata-rata 6 bulan terakhir',
+      a.simulation.categories.length ? simulator(a.simulation) : h('p', { class: 'empty', text: 'Data belum cukup.' })),
+  ));
+
+  const c = a.reconciliation, q = a.quality;
+  out.push(h('h2', { text: 'Kualitas data' }));
+  const reconCard = c ? card('Rekonsiliasi saldo', `Saat saldo pertama kali diisi, ${dateLabel(c.opened_at)}`,
+    table(['Pos', { label: 'Jumlah', num: 1 }], [
+      ['Total income tercatat', rp(c.income)],
+      ['Total expense tercatat', rp(-c.expense)],
+      ['Seharusnya tersisa', rp(c.recorded)],
+      ['Saldo nyata', rp(c.opening_total)],
+      ['Selisih', rp(c.gap)],
+      ['Selisih jika transaksi terjadwal sudah dibayar', rp(c.gap_after_future)],
+    ]),
+    h('p', { class: 'note', text: 'Saldo awal sebelum pencatatan tidak diketahui, jadi selisih nyatanya bisa lebih besar. Penyebab paling umum: pengeluaran yang tidak dicatat.' }))
+    : card('Rekonsiliasi saldo', null, h('p', { class: 'empty', text: 'Belum ada saldo awal.' }));
+  const qualityCard = card('Catatan tentang data', null, table(['Hal', { label: 'Jumlah', num: 1 }], [
+    ['Total transaksi', nf.format(q.total)],
+    [`Bertanggal masa depan (${q.future_categories.map(x => x[0]).join(', ') || '–'}), sampai ${q.future_count ? dateLabel(q.future_last) : '–'}`, `${nf.format(q.future_count)} / ${rp(q.future_total)}`],
+    ['Tanpa akun, tidak memengaruhi saldo', nf.format(q.no_account)],
+    ['Tanpa jam (tercatat 00:00)', nf.format(q.no_time)],
+    [`Sebelum ${q.first_active || 'data rutin'}, tidak dipakai sebagai patokan`, `${nf.format(q.sparse_transactions)} transaksi`],
+    ...q.bursts.map(b => [`Pencatatan massal: ${b.description}, ${dateLabel(b.date)}`, `${nf.format(b.count)}x / ${rp(b.total)}`]),
+  ]));
+  out.push(h('div', { class: 'grid g2' }, reconCard, qualityCard));
+  return out;
+}
+
+/* ---------- Halaman: Data ---------- */
+const MONEY_COLS = new Set(['amount', 'change', 'balance']);
+const TABLE_LABELS = { transactions: 'Transaksi', balance_history: 'Riwayat saldo', transfers: 'Transfer', budgets: 'Budget', recurring: 'Transaksi rutin' };
+
+function cellText(col, v) {
+  if (v == null || v === '') return '–';
+  if (MONEY_COLS.has(col)) return rp(v);
+  if (col === 'created' && /^\d{14}$/.test(String(v))) {
+    const t = String(v);
+    return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)} ${t.slice(8, 10)}:${t.slice(10, 12)}`;
+  }
+  if (col === 'is_outlier') return v ? 'Ya' : '–';
+  return String(v);
+}
+
+function viewData() {
+  const tables = state.tables;
+  if (!tables) return [];
+  const ds = state.data;
+  if (!tables[ds.table]) ds.table = Object.keys(tables)[0];
+  const { columns: cols, rows } = tables[ds.table];
+  const todayNum = Number(state.adv.today.replaceAll('-', '') + '235959');
+
+  const select = h('select', {
+    'aria-label': 'Tabel',
+    onchange: e => { ds.table = e.target.value; ds.q = ''; ds.page = 0; ds.sort = tables[ds.table].columns.includes('created') ? 'created' : null; ds.dir = -1; render(); },
+  }, Object.entries(tables).map(([name, t]) => h('option', { value: name, text: `${TABLE_LABELS[name] || name} (${nf.format(t.rows.length)})` })));
+  select.value = ds.table;
+
+  const body = h('div');
+  const countEl = h('span', { class: 'note' });
+  const draw = () => {
+    const q = ds.q.trim().toLowerCase();
+    let found = q ? rows.filter(r => r.some((v, i) => cellText(cols[i], v).toLowerCase().includes(q))) : rows;
+    const idx = cols.indexOf(ds.sort);
+    if (idx >= 0) {
+      found = [...found].sort((a, b) => {
+        const x = a[idx], y = b[idx];
+        if (x == null) return 1;
+        if (y == null) return -1;
+        return (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * ds.dir;
+      });
+    }
+    const pages = Math.max(1, Math.ceil(found.length / PAGE_SIZE));
+    ds.page = Math.min(ds.page, pages - 1);
+    const shown = found.slice(ds.page * PAGE_SIZE, (ds.page + 1) * PAGE_SIZE);
+    countEl.textContent = `${nf.format(found.length)} baris`;
+
+    const createdIdx = cols.indexOf('created');
+    const head = h('tr', null, cols.map(c => h('th', { class: MONEY_COLS.has(c) ? 'num' : null, 'aria-sort': ds.sort === c ? (ds.dir > 0 ? 'ascending' : 'descending') : null },
+      h('button', {
+        type: 'button', text: `${c}${ds.sort === c ? (ds.dir > 0 ? ' ▲' : ' ▼') : ''}`,
+        onclick: () => { ds.dir = ds.sort === c ? -ds.dir : 1; ds.sort = c; ds.page = 0; draw(); },
+      }))));
+    const tbody = h('tbody', null, shown.map(r => h('tr', null, r.map((v, i) => {
+      const td = h('td', { class: MONEY_COLS.has(cols[i]) ? 'num' : (cols[i] === 'created' ? 'nowrap' : null), text: cellText(cols[i], v) });
+      if (i === createdIdx && ds.table === 'transactions' && Number(v) > todayNum) td.append(h('span', { class: 'pill', text: 'terjadwal' }));
+      return td;
+    }))));
+    const pager = h('div', { class: 'pager' },
+      h('button', { class: 'btn', type: 'button', text: 'Sebelumnya', disabled: ds.page === 0, onclick: () => { ds.page -= 1; draw(); } }),
+      h('span', { text: `Halaman ${nf.format(ds.page + 1)} dari ${nf.format(pages)}` }),
+      h('button', { class: 'btn', type: 'button', text: 'Berikutnya', disabled: ds.page >= pages - 1, onclick: () => { ds.page += 1; draw(); } }));
+    body.replaceChildren(
+      rows.length ? h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, head), tbody)) : h('p', { class: 'empty', text: 'Tabel ini masih kosong.' }),
+      rows.length ? pager : '',
+    );
+  };
+  const search = h('input', { class: 'search', type: 'search', placeholder: 'Cari di tabel ini', value: ds.q, 'aria-label': 'Cari', oninput: e => { ds.q = e.target.value; ds.page = 0; draw(); } });
+  draw();
+  return [h('section', { class: 'card' }, h('div', { class: 'data-bar' }, select, search, countEl), body)];
+}
+
+/* ---------- Render ---------- */
+const VIEWS = { ringkasan: viewRingkasan, pengeluaran: viewPengeluaran, analisis: viewAnalisis, data: viewData };
+
+function render() {
+  document.querySelectorAll('.tabs a').forEach(a => {
+    if (a.dataset.tab === state.tab) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  renderFilters();
+  hideTip();
+  if (!state.dash || !state.adv) return;
+  if (state.tab === 'data' && !state.tables) { refresh(); return; }
+  pending = [];
+  const view = $('#view');
+  view.replaceChildren(...VIEWS[state.tab]());
+  flushCharts();
+  lastWidth = view.clientWidth;
+}
+
+function setTab() {
+  const tab = location.hash.slice(1);
+  state.tab = TABS.includes(tab) ? tab : 'ringkasan';
+  window.scrollTo(0, 0);
+  render();
+}
+
+let lastWidth = 0, resizeTimer = 0;
+new ResizeObserver(() => {
+  const width = $('#view').clientWidth;
+  if (width === lastWidth) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (state.tab !== 'data') render(); }, 150);
+}).observe($('#view'));
+
+/* Tema disimpan di browser ini saja. */
+function applyTheme(theme) {
+  if (theme) document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+}
+try { applyTheme(localStorage.getItem('theme')); } catch { /* storage bisa diblokir */ }
+const urlTheme = new URLSearchParams(location.search).get('theme');
+if (urlTheme === 'dark' || urlTheme === 'light') applyTheme(urlTheme);
+$('#theme').addEventListener('click', () => {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === 'dark'
+    : matchMedia('(prefers-color-scheme: dark)').matches;
+  const next = dark ? 'light' : 'dark';
+  applyTheme(next);
+  try { localStorage.setItem('theme', next); } catch { /* tetap jalan tanpa disimpan */ }
+});
+
+$('#reload').addEventListener('click', () => refresh(true));
+window.addEventListener('hashchange', setTab);
+window.addEventListener('error', e => showError(`Error tampilan: ${e.message}`));
+window.addEventListener('unhandledrejection', e => showError(`Error: ${e.reason?.message || e.reason}`));
+
+state.tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'ringkasan';
+refresh(true);
+</script>
+</body>
+</html>

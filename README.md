@@ -16,6 +16,7 @@ Bot Telegram pencatat keuangan pribadi. Transaksi expense/income disimpan di SQL
 - Hapus, undo, dan edit transaksi langsung dari Telegram
 - Pencarian transaksi dari deskripsi
 - Laporan HTML lewat command line
+- Web view lokal: ringkasan, analisis pengeluaran, analisis lanjutan, dan penjelajah data
 
 ## Persiapan
 
@@ -170,7 +171,39 @@ python g_trend.py                  # trend.png, 12 bulan terakhir
 python g_trend.py tren.png 6       # 6 bulan terakhir ke file tertentu
 ```
 
-Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan berjalan. Bulan di masa depan (biasanya salah input tanggal) dibiarkan polos.
+Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan berjalan. Bulan di masa depan (transaksi yang tanggalnya dijadwalkan ke depan) dibiarkan polos.
+
+## Web view
+
+Dashboard di browser untuk melihat dan menganalisis data. Tidak butuh dependency tambahan dan bisa dipakai tanpa internet.
+
+```
+python web_view.py              # http://127.0.0.1:8765, langsung terbuka di browser
+python web_view.py 9000         # pakai port lain
+python web_view.py --no-open    # tanpa membuka browser
+```
+
+Stop dengan `Ctrl+C`. Boleh dijalankan bersamaan dengan bot. Tekan **Muat ulang** di halaman untuk mengambil data terbaru.
+
+| Halaman | Isi |
+|---|---|
+| **Ringkasan** | Saldo per akun, income, expense, saving, saving rate, kesimpulan periode, grafik bulanan, saving kumulatif |
+| **Pengeluaran** | Kategori, kategori per bulan, kalender harian, pola hari dan jam, ukuran transaksi, transaksi dan barang terbesar |
+| **Analisis lanjut** | Proyeksi akhir bulan, ketahanan saldo, tren, pola setelah gajian, biaya rutin, kebiasaan, perubahan harga, anomali, saran budget, simulasi berhemat, kualitas data |
+| **Data** | Semua tabel database, bisa dicari, diurutkan, dan dibuka per halaman |
+
+Filter tanggal, akun, dan outlier berlaku di Ringkasan dan Pengeluaran. Analisis lanjut selalu memakai seluruh riwayat. Setiap grafik punya **Lihat tabel** untuk membaca angkanya.
+
+Cara menghitungnya:
+
+- **Expense** tidak menghitung outlier, kecuali **Hitung outlier** dicentang.
+- **Transaksi bertanggal setelah hari ini** tidak dihitung, kecuali tanggal akhir filter diatur ke masa depan.
+- **Patokan normal** hanya memakai bulan lengkap, mulai bulan pertama yang punya minimal 20 transaksi.
+- **Proyeksi akhir bulan** memakai pola bulan-bulan lalu (sampai titik yang sama di bulan, biasanya sudah berapa persen dari total), bukan rata-rata harian biasa, jadi biaya di akhir bulan tetap terhitung. Angka "meleset" adalah rata-rata kesalahan cara ini saat dites ke bulan-bulan lampau.
+- **Perubahan harga** hanya melihat kategori Food dan Water, membandingkan median harga satuan sepertiga pembelian pertama dengan sepertiga terakhir.
+- **Pencatatan massal** adalah minimal 5 baris dengan deskripsi dan nominal sama yang masuk dalam 10 menit. Status proyeksi dinilai tanpa baris-baris ini.
+
+Keamanan: server hanya menerima koneksi dari komputer ini (`127.0.0.1`), database dibuka read-only sehingga web view tidak bisa mengubah data, dan halaman tidak memuat apa pun dari internet. Tidak ada login, jadi jangan mengubah `HOST` ke alamat jaringan.
 
 ## Struktur database
 
@@ -222,5 +255,8 @@ Warna merah–kuning–hijau di tabel ringkasan hanya diterapkan sampai bulan be
 | `g_weekly_e.py` | Gambar expense 7 hari terakhir |
 | `g_insight.py` | Insight bulanan (teks) dan status budget |
 | `g_trend.py` | Gambar tren bulanan |
+| `g_analysis.py` | Perhitungan web view: ringkasan periode dan analisis lanjutan |
+| `web_view.py` | Server web lokal |
+| `web_view.html` | Tampilan web view |
 | `requirements.txt` | Dependency (`openpyxl`, `matplotlib`) |
 | `.env.example` | Template konfigurasi |
