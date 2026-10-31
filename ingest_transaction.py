@@ -27,8 +27,9 @@ Command:
   /recurring [add|del]     -> transaksi rutin bulanan yang dicatet otomatis
   /search <kata>           -> cari transaksi dari deskripsi
   /backup                  -> kirim zip berisi semua tabel DB dalam format CSV
+  /shutdown                -> matiin bot (pakai konfirmasi)
 
-Bot jalan terus (long polling) sampai di-stop pakai Ctrl+C.
+Bot jalan terus (long polling) sampai di-stop pakai /shutdown atau Ctrl+C.
 Pesan yang formatnya ga cocok dilewat (user dikasih tau lewat balasan).
 """
 
@@ -75,6 +76,8 @@ if not TOKEN:
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
 MESSAGE_LIMIT = 4000  # batas Telegram 4096, lewat dari itu pesan ditolak
+# Beda tiap bot start, jadi tombol konfirmasi /shutdown dari sesi sebelumnya ga bisa matiin bot yang baru jalan.
+SHUTDOWN_TOKEN = secrets.token_hex(4)
 
 TYPES = ["expense", "income"]
 
@@ -662,6 +665,10 @@ def cmd_cancel(chat_id, args):
         send_message(chat_id, "Ga ada /add yang lagi jalan.")
 
 
+class Shutdown(Exception):
+    """Dilempar pas /shutdown dikonfirmasi, ditangkep di main()."""
+
+
 def handle_callback(cq):
     chat_id = cq["message"]["chat"]["id"]
     message_id = cq["message"]["message_id"]
@@ -685,6 +692,17 @@ def handle_callback(cq):
     if data == "delno":
         answer_callback_query(cq["id"])
         edit_message_text(chat_id, message_id, "Ga jadi dihapus.")
+        return
+    if data.startswith("shutdown:"):
+        answer_callback_query(cq["id"])
+        if data != f"shutdown:{SHUTDOWN_TOKEN}":
+            edit_message_text(chat_id, message_id, "Konfirmasinya udah kedaluwarsa, ketik /shutdown lagi.")
+            return
+        edit_message_text(chat_id, message_id, "Bot dimatiin 👋 Jalanin lagi dari komputernya.")
+        raise Shutdown
+    if data == "shutdownno":
+        answer_callback_query(cq["id"])
+        edit_message_text(chat_id, message_id, "Ga jadi dimatiin.")
         return
     if data == "cancel":
         pending_add.pop(chat_id, None)
@@ -1192,6 +1210,19 @@ def cmd_backup(chat_id, args):
         )
 
 
+def cmd_shutdown(chat_id, args):
+    """/shutdown -> matiin bot. Pakai konfirmasi, soalnya abis mati ga bisa dinyalain lagi dari Telegram."""
+    if ALLOWED_USER_ID is None:
+        send_message(chat_id, "/shutdown butuh ALLOWED_USER_ID di .env, biar orang lain ga bisa matiin bot.")
+        return
+    keyboard = {"inline_keyboard": [[
+        {"text": "Ya, matikan", "callback_data": f"shutdown:{SHUTDOWN_TOKEN}"},
+        {"text": "Batal", "callback_data": "shutdownno"},
+    ]]}
+    send_message(chat_id, "Matikan bot? Bot ga bisa dinyalain lagi dari Telegram, harus dijalanin di komputernya.",
+                 keyboard)
+
+
 COMMANDS = {
     "/add": cmd_add,
     "/cancel": cmd_cancel,
@@ -1211,6 +1242,7 @@ COMMANDS = {
     "/search": cmd_search,
     "/trend": cmd_trend,
     "/backup": cmd_backup,
+    "/shutdown": cmd_shutdown,
 }
 
 HELP_TEXT = (
@@ -1232,7 +1264,8 @@ HELP_TEXT = (
     "/budget [kategori angka] - lihat/set budget bulanan\n"
     "/recurring - transaksi rutin bulanan\n"
     "/search <kata> - cari transaksi\n"
-    "/backup - export semua data ke CSV (zip)\n\n"
+    "/backup - export semua data ke CSV (zip)\n"
+    "/shutdown - matiin bot\n\n"
     "Atau insert cepat (akun di akhir opsional, kalau ga ditulis nanti ditanya):\n"
     "Nasi Bali, 2, 14000, expense, Food, Cash\n\n"
     "Atau cukup deskripsi & jumlah, sisanya ditebak (akun boleh ditulis di belakang):\n"
@@ -1475,7 +1508,7 @@ def handle_update(update):
 
 def main():
     init_db()
-    print(f"Bot jalan, DB: {DB_PATH}. Ctrl+C buat stop.")
+    print(f"Bot jalan, DB: {DB_PATH}. Ctrl+C atau /shutdown buat stop.")
     offset = None
     while True:
         # dicek tiap putaran (paling lama ~50 detik sekali karena long polling)
@@ -1498,6 +1531,12 @@ def main():
             offset = update["update_id"] + 1
             try:
                 handle_update(update)
+            except Shutdown:
+                # Telegram baru nganggep update beres pas getUpdates berikutnya. Kalau langsung keluar,
+                # pas start lagi batch ini dikirim ulang dan transaksi di dalemnya kecatet dobel.
+                api_call("getUpdates", {"offset": offset, "timeout": 0})
+                print("Bot di-stop lewat /shutdown.")
+                return
             except Exception as e:
                 print(f"Error proses update {update['update_id']}: {e!r}")
 

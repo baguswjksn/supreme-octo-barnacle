@@ -41,7 +41,7 @@ ALLOWED_USER_ID=<user ID Telegram kamu, cek lewat @userinfobot>
 python ingest_transaction.py
 ```
 
-Bot jalan terus (long polling) dan langsung membalas setiap pesan. Stop dengan `Ctrl+C`. Kalau internet putus, bot mencoba lagi sendiri setiap 5 detik.
+Bot jalan terus (long polling) dan langsung membalas setiap pesan. Stop dengan `Ctrl+C` di komputernya atau `/shutdown` dari Telegram. Setelah `/shutdown`, bot hanya bisa dijalankan lagi dari komputernya. Kalau internet putus, bot mencoba lagi sendiri setiap 5 detik.
 
 Database selalu `transactions.db` di folder yang sama dengan script, jadi script bisa dijalankan dari folder mana pun. Tabel dan kolom yang belum ada dibuat otomatis saat bot start.
 
@@ -70,6 +70,7 @@ Database selalu `transactions.db` di folder yang sama dengan script, jadi script
 | `/recurring del <id>` | Hapus transaksi rutin |
 | `/search <kata>` | Cari transaksi yang deskripsinya mengandung kata itu |
 | `/backup` | Kirim file `.zip` berisi semua data, satu CSV per tabel (`transactions.csv`, `balance_history.csv`, `transfers.csv`, `budgets.csv`, `recurring.csv`) |
+| `/shutdown` | Matikan bot (ada tombol konfirmasi). Hanya aktif kalau `ALLOWED_USER_ID` diisi |
 
 Command lain atau format yang tidak dikenali dibalas dengan daftar bantuan.
 
