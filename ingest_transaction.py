@@ -21,6 +21,7 @@ Command:
   /transfer <dari> <ke> <x> [catatan] -> pindah saldo antar akun, ga dihitung income/expense
   /undo                    -> hapus transaksi/transfer terakhir (pakai konfirmasi)
   /delete <id>             -> hapus transaksi/transfer tertentu (pakai konfirmasi)
+  /dup <id> [id lain ...]  -> catet ulang transaksi yang sama, waktunya sekarang
   /edit <id> <field> <x>   -> ubah amount/desc/qty/category/type/account transaksi
   /budget [kategori x]     -> lihat status budget bulan ini / set budget (0 = hapus)
   /recurring [add|del]     -> transaksi rutin bulanan yang dicatet otomatis
@@ -73,6 +74,7 @@ if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN belum di-set. Isi di file .env (contoh di .env.example)")
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
+MESSAGE_LIMIT = 4000  # batas Telegram 4096, lewat dari itu pesan ditolak
 
 TYPES = ["expense", "income"]
 
@@ -283,10 +285,11 @@ def set_balance(account, new_balance):
     return old, new_balance
 
 
-def insert_transaction(description, quantity, amount, tx_type, category, created, account):
+def insert_transaction(description, quantity, amount, tx_type, category, created, account, is_outlier=0):
     tx_id = "r" + secrets.token_hex(7)
     # outlier cuma berlaku buat expense, income ga pernah dipisah jadi outlier
-    is_outlier = 1 if category == "Outlier" and tx_type == "expense" else 0
+    # (data lama nandain outlier di kategori biasa, jadi flag-nya ikut kebawa pas diduplikat)
+    is_outlier = 1 if is_outlier or (category == "Outlier" and tx_type == "expense") else 0
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         "INSERT INTO transactions "
@@ -312,6 +315,15 @@ def insert_transfer(from_account, to_account, amount, created, note=None):
     balances = get_balance(conn, from_account), get_balance(conn, to_account)
     conn.close()
     return (tr_id, *balances)
+
+
+def get_transaction(tx_id):
+    """Kolom transaksi yang disalin /dup, atau None kalau ID-nya bukan transaksi."""
+    columns = ("description", "quantity", "amount", "type", "category", "account", "is_outlier")
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(f"SELECT {', '.join(columns)} FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+    conn.close()
+    return dict(zip(columns, row)) if row else None
 
 
 def find_record(record_id):
@@ -494,6 +506,17 @@ def send_message(chat_id, text, reply_markup=None):
     return api_call("sendMessage", params)
 
 
+def send_lines(chat_id, lines):
+    """Kirim baris-baris teks, dipecah jadi beberapa pesan kalau lewat batas panjang pesan Telegram."""
+    chunk = []
+    for line in lines:
+        if chunk and sum(len(l) + 1 for l in chunk) + len(line) > MESSAGE_LIMIT:
+            send_message(chat_id, "\n".join(chunk))
+            chunk = []
+        chunk.append(line)
+    send_message(chat_id, "\n".join(chunk))
+
+
 def send_file(chat_id, method, field, file_path, content_type, caption=None):
     """Upload file ke Telegram (sendDocument/sendPhoto) pakai multipart/form-data manual."""
     boundary = "----FinanceBotBoundary" + secrets.token_hex(8)
@@ -591,6 +614,7 @@ def save_transaction(chat_id, tx, header="Tersimpan ✅"):
     """Simpan transaksi dari dict lengkap (description, quantity, amount, type, category, created, account)."""
     tx_id, balance = insert_transaction(
         tx["description"], tx["quantity"], tx["amount"], tx["type"], tx["category"], tx["created"], tx["account"],
+        tx.get("is_outlier", 0),
     )
     text = (
         f"{header}\n"
@@ -618,6 +642,12 @@ def save_or_ask(chat_id, tx, header="Tersimpan ✅"):
         send_message(chat_id, f"{summary} | {tx['type']} | {tx['category']}\nPakai akun mana?", account_keyboard())
     else:
         save_transaction(chat_id, tx, header)
+
+
+def save_duplicates(chat_id, txs, account=None):
+    """Simpan salinan transaksi dari /dup. Yang belum punya akun (data lama) pakai `account`."""
+    for tx in txs:
+        save_transaction(chat_id, {**tx, "account": tx["account"] or account}, header="Diduplikat ✅")
 
 
 def cmd_add(chat_id, args):
@@ -673,6 +703,11 @@ def handle_callback(cq):
     elif data.startswith("acc:") and state["step"] == "account":
         state["account"] = data.split(":", 1)[1]
         answer_callback_query(cq["id"])
+        if "duplicates" in state:
+            pending_add.pop(chat_id, None)
+            edit_message_text(chat_id, message_id, f"Akun: {state['account']}")
+            save_duplicates(chat_id, state["duplicates"], state["account"])
+            return
         if "description" in state:
             # dari insert cepat: tinggal akun yang kurang, langsung simpan
             pending_add.pop(chat_id, None)
@@ -791,7 +826,7 @@ def cmd_last(chat_id, args):
     conn = sqlite3.connect(DB_PATH)
     total = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     rows = conn.execute(
-        "SELECT created, type, category, quantity, amount, description, account FROM transactions "
+        "SELECT created, type, category, quantity, amount, description, account, id FROM transactions "
         "ORDER BY rowid DESC LIMIT ?",
         (n,),
     ).fetchall()
@@ -800,7 +835,7 @@ def cmd_last(chat_id, args):
         send_message(chat_id, "Belum ada data transaksi.")
         return
     lines = [f"Total {total:,} transaksi. {len(rows)} terakhir:"]
-    for created, tx_type, category, qty, amount, description, account in rows:
+    for created, tx_type, category, qty, amount, description, account, tx_id in rows:
         try:
             when = parse_created(created).strftime("%Y-%m-%d %H:%M")
         except ValueError:
@@ -808,8 +843,8 @@ def cmd_last(chat_id, args):
         sign = "-" if tx_type == "expense" else "+"
         qty_txt = f" x{qty}" if qty and qty != 1 else ""
         account_txt = f" | {account}" if account else ""
-        lines.append(f"{when} | {sign}Rp{amount or 0:,}{qty_txt} | {category}{account_txt} | {description}")
-    send_message(chat_id, "\n".join(lines))
+        lines.append(f"{when} | {sign}Rp{amount or 0:,}{qty_txt} | {category}{account_txt} | {description} | {tx_id}")
+    send_lines(chat_id, lines)
 
 
 def cmd_report(chat_id, args):
@@ -908,6 +943,40 @@ def cmd_delete(chat_id, args):
         send_message(chat_id, "Pakai: /delete <id>. ID ada di /last, /search, atau pesan Tersimpan.")
         return
     confirm_delete(chat_id, args[0])
+
+
+def cmd_dup(chat_id, args):
+    """
+    /dup <id> [id lain ...] -> catet ulang transaksi, waktunya sekarang. ID yang sama ditulis 2x = dicatet 2x.
+    Satu ID salah = ga ada yang disimpan, biar perintahnya bisa dikirim ulang tanpa bikin dobel.
+    """
+    if not args:
+        send_message(
+            chat_id,
+            "Pakai: /dup <id> [id lain ...]\n"
+            "Contoh: /dup r5d526bb03b79a7 r7b0caa85edcbb7\n\n"
+            "ID ada di /last, /search, atau pesan Tersimpan.",
+        )
+        return
+    txs = [get_transaction(tx_id) for tx_id in args]
+    missing = [tx_id for tx_id, tx in zip(args, txs) if tx is None]
+    if missing:
+        send_message(
+            chat_id,
+            "Ga ada yang disimpan, ID ini ga ketemu:\n" + "\n".join(missing) + "\n\n"
+            "Cek ID-nya lewat /last atau /search. Transfer ga bisa diduplikat.",
+        )
+        return
+    created = datetime.now().strftime("%Y%m%d%H%M%S")
+    txs = [{**tx, "created": created} for tx in txs]
+    no_account = [tx["description"] for tx in txs if tx["account"] is None]
+    if no_account:
+        # satu tombol buat semuanya: pending_add cuma muat satu pertanyaan per chat
+        pending_add[chat_id] = {"step": "account", "duplicates": txs}
+        send_message(chat_id, "Belum punya akun (data lama): " + ", ".join(no_account) + "\nPakai akun mana?",
+                     account_keyboard())
+        return
+    save_duplicates(chat_id, txs)
 
 
 def cmd_edit(chat_id, args):
@@ -1135,6 +1204,7 @@ COMMANDS = {
     "/transfer": cmd_transfer,
     "/undo": cmd_undo,
     "/delete": cmd_delete,
+    "/dup": cmd_dup,
     "/edit": cmd_edit,
     "/budget": cmd_budget,
     "/recurring": cmd_recurring,
@@ -1157,6 +1227,7 @@ HELP_TEXT = (
     "/transfer <dari> <ke> <amount> - pindah saldo antar akun\n"
     "/undo - hapus transaksi terakhir\n"
     "/delete <id> - hapus transaksi/transfer\n"
+    "/dup <id> [id lain ...] - catet ulang transaksi, ID dipisah spasi\n"
     "/edit <id> <field> <nilai> - ubah transaksi\n"
     "/budget [kategori angka] - lihat/set budget bulanan\n"
     "/recurring - transaksi rutin bulanan\n"

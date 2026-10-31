@@ -13,7 +13,7 @@ Bot Telegram pencatat keuangan pribadi. Transaksi expense/income disimpan di SQL
 - Transfer antar akun yang tidak dihitung sebagai income/expense
 - Budget bulanan per kategori, dengan peringatan setiap kali transaksi disimpan
 - Transaksi rutin bulanan yang dicatat otomatis
-- Hapus, undo, dan edit transaksi langsung dari Telegram
+- Hapus, undo, edit, dan duplikat transaksi langsung dari Telegram
 - Pencarian transaksi dari deskripsi
 - Laporan HTML lewat command line
 - Web view lokal: ringkasan, analisis pengeluaran, analisis lanjutan, dan penjelajah data
@@ -61,6 +61,7 @@ Database selalu `transactions.db` di folder yang sama dengan script, jadi script
 | `/transfer <dari> <ke> <amount> [catatan]` | Pindah saldo antar akun, misalnya `/transfer mega dana 500000 topup` |
 | `/undo` | Hapus transaksi atau transfer yang terakhir dimasukkan (ada tombol konfirmasi) |
 | `/delete <id>` | Hapus transaksi atau transfer tertentu (ada tombol konfirmasi) |
+| `/dup <id> [id lain ...]` | Catat ulang transaksi yang sama dengan waktu sekarang, ID dipisah spasi |
 | `/edit <id> <field> <nilai>` | Ubah transaksi. Field: `amount`, `desc`, `qty`, `category`, `type`, `account` |
 | `/budget` | Status semua budget bulan ini |
 | `/budget <kategori> <angka>` | Set budget bulanan kategori, `0` untuk menghapus |
@@ -103,9 +104,22 @@ Kalau ada budget, `/insight` bulan berjalan juga menampilkan status budget.
 
 Bot mencatat transaksinya otomatis setiap bulan di tanggal itu dan mengirim pesan konfirmasi. Tanggal 29–31 di bulan yang lebih pendek dicatat di hari terakhir bulan itu. Kalau tanggalnya sudah lewat saat ditambahkan, pencatatan otomatis mulai bulan depan; catat manual untuk bulan ini kalau belum. Bot harus sedang jalan supaya pencatatan terjadi. Kalau bot mati di tanggal itu, transaksinya dicatat begitu bot jalan lagi (masih di bulan yang sama).
 
-### Hapus dan edit
+### Hapus, edit, dan duplikat
 
 ID transaksi ada di pesan "Tersimpan", `/last`, dan `/search`. Hapus dan edit lewat bot ikut menyesuaikan saldo akun. Transfer tidak bisa diedit; hapus lalu buat ulang.
+
+`/dup` mencatat ulang satu atau beberapa transaksi, cocok untuk pembelian yang berulang:
+
+```
+/dup r5d526bb03b79a7
+/dup r5d526bb03b79a7 r7b0caa85edcbb7 ra3f37c6d9398bd
+```
+
+- Salinannya memakai deskripsi, quantity, amount, tipe, kategori, akun, dan tanda outlier yang sama, dengan ID baru dan waktu sekarang. Saldo akun ikut berubah.
+- ID yang sama boleh ditulis lebih dari sekali; setiap ID dicatat sekali lagi.
+- Kalau ada satu ID yang tidak ketemu, tidak ada yang disimpan, jadi perintahnya aman dikirim ulang setelah diperbaiki.
+- Transaksi lama yang belum punya akun ditanyakan lewat satu tombol, dan akun itu dipakai semua transaksi lama di perintah tersebut.
+- Transfer tidak bisa diduplikat; buat ulang dengan `/transfer`.
 
 ### Format cepat
 
