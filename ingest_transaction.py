@@ -5,6 +5,9 @@
 "Nasi Bali, 2, 14000, expense, Food, Cash"  (deskripsi, quantity, jumlah, tipe, kategori, akun)
 Akun boleh ga ditulis, nanti bot nanya lewat tombol.
 
+"mie ayam, 12000" / "mie ayam 12rb dana"    (deskripsi & jumlah doang, sisanya ditebak)
+Kategori ditebak dari riwayat + CATEGORY_RULES, akun dari transaksi terakhir. Kategori ga ketebak ditanya.
+
 Command:
   /add       -> insert interaktif: pilih tipe, akun, kategori, ketik amount, ketik deskripsi
   /cancel    -> batalin /add yang lagi jalan
@@ -30,6 +33,7 @@ Pesan yang formatnya ga cocok dilewat (user dikasih tau lewat balasan).
 
 import io
 import os
+import re
 import csv
 import json
 import time
@@ -603,6 +607,19 @@ def save_transaction(chat_id, tx, header="Tersimpan ✅"):
     send_message(chat_id, text)
 
 
+def save_or_ask(chat_id, tx, header="Tersimpan ✅"):
+    """Simpan transaksi dari insert cepat. Kalau kategori/akunnya belum ada, tanya dulu lewat tombol."""
+    summary = f"{tx['description']} | Rp{tx['amount']:,}"
+    if tx["category"] is None:
+        pending_add[chat_id] = {**tx, "step": "category"}
+        send_message(chat_id, f"{summary}\nKategorinya apa?", category_keyboard())
+    elif tx["account"] is None:
+        pending_add[chat_id] = {**tx, "step": "account"}
+        send_message(chat_id, f"{summary} | {tx['type']} | {tx['category']}\nPakai akun mana?", account_keyboard())
+    else:
+        save_transaction(chat_id, tx, header)
+
+
 def cmd_add(chat_id, args):
     pending_add[chat_id] = {"step": "type"}
     send_message(chat_id, "Tambah transaksi. Pilih tipe:", type_keyboard())
@@ -669,8 +686,16 @@ def handle_callback(cq):
         )
     elif data.startswith("cat:") and state["step"] == "category":
         state["category"] = data.split(":", 1)[1]
-        state["step"] = "amount"
         answer_callback_query(cq["id"])
+        if "description" in state:
+            # dari input singkat yang kategorinya ga ketebak: tipe & akun baru bisa ditentuin sekarang
+            pending_add.pop(chat_id, None)
+            state["type"] = category_type(state["category"])
+            state["account"] = state["account"] or guess_account(state["category"])
+            edit_message_text(chat_id, message_id, f"Kategori: {state['category']}")
+            save_or_ask(chat_id, state, AUTO_SAVED_HEADER)
+            return
+        state["step"] = "amount"
         edit_message_text(
             chat_id, message_id,
             f"Tipe: {state['type']}\nAkun: {state['account']}\nKategori: {state['category']}\n\n"
@@ -1139,6 +1164,9 @@ HELP_TEXT = (
     "/backup - export semua data ke CSV (zip)\n\n"
     "Atau insert cepat (akun di akhir opsional, kalau ga ditulis nanti ditanya):\n"
     "Nasi Bali, 2, 14000, expense, Food, Cash\n\n"
+    "Atau cukup deskripsi & jumlah, sisanya ditebak (akun boleh ditulis di belakang):\n"
+    "mie ayam, 12000\n"
+    "mie ayam 12rb dana\n\n"
     "Akun: " + ", ".join(ACCOUNTS)
 )
 
@@ -1195,6 +1223,121 @@ def parse_quick_input(text):
     return description, quantity, amount, type_raw, category, account
 
 
+# Input singkat: deskripsi, jumlah (boleh pakai Rp, pemisah ribuan, satuan rb/jt), lalu akun opsional.
+SHORT_INPUT_RE = re.compile(
+    r"^(?!rp\b)(?P<description>.*?\S)[\s,:=-]+(?:rp\.?\s*)?"
+    r"(?P<amount>\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d{1,2})?)\s*(?P<unit>k|rb|ribu|jt|juta)?"
+    r"(?:[\s,]+(?P<account>[^\W\d_][^\d,]*))?$",
+    re.IGNORECASE,
+)
+AMOUNT_UNITS = {"k": 1_000, "rb": 1_000, "ribu": 1_000, "jt": 1_000_000, "juta": 1_000_000}
+# Di bawah ini bukan transaksi, tapi kalimat biasa yang kebetulan berakhir angka ("kamar 12").
+MIN_SHORT_AMOUNT = 100
+
+AUTO_SAVED_HEADER = "Tersimpan otomatis ✅ (salah? /edit atau /undo)"
+
+# Tebak kategori dari deskripsi yang belum pernah ada di riwayat. Dicek urut dari atas, yang pertama
+# cocok menang, jadi urutannya penting: "parkir mie ayam" kena Transportation sebelum Food,
+# "minyak goreng" kena Needs sebelum Food, "nasi + es teh" kena Food sebelum Water.
+# Water di sini artinya semua minuman.
+CATEGORY_RULES = [(category, re.compile(pattern, re.IGNORECASE)) for category, pattern in (
+    ("Active Income", r"\b(payroll|gaji|salary|tunjangan)\b"),
+    ("Transportation", r"\b(parkir|pertalite|pertamax|bensin|spbu|gojek|grab|maxim|ojek|ojol|krl|commuter|comuter"
+                       r"|kereta|stasiun|shuttle|bus|travel|tol|motor|servis|service|tambal|oli|ban)\b"),
+    ("Laundry", r"\b(laundry|laundy|laundri|setrika|detergen|gentle gen)\b|\bcuci\b(?! piring)|\bbaju\s+\d"),
+    ("Internet", r"\b(internet|wifi|pulsa|kuota|quota)\b|\b\d+\s*gb\b"),
+    ("Rent", r"\b(kos|kost|kosan|kostan|sewa)\b"),
+    ("Book", r"\b(buku|novel|komik|manga|gramedia|naruto|frieren|akasha|apothecary|yotsuba)\b"),
+    ("Healthcare", r"\b(obat|vitamin|vitacimin|antangin|tolak angin|komix|puskesmas|dokter|apotek|klinik"
+                   r"|paracetamol|panadol|promag|bodrex)\b"),
+    ("Entertainment", r"\b(nonton|bioskop|konser|coc|clash of clans|netflix|spotify|steam)\b"),
+    ("Utilities", r"\b(vps|server|hosting|lampu|charger|gunting|selotip|solasi|isolasi)\b"),
+    ("Needs", r"\b(tissue|tisu|tisue|sabun|sampo|shampoo|odol|sikat gigi|pasta gigi|baterai|batre|listrik"
+              r"|sedekah|minyak goreng|plastik|kertas)\b"),
+    ("Food", r"\b(nasi|mie|mi|mia|indomie|popmie|bakmi|ramen|bihun|kwetiau|ayam|chicken|chiken|rocket|bebek|lele"
+             r"|ikan|telur|tempe|tahu|jamur|geprek|sate|soto|bakso|batagor|siomay|pangsit|pecel|lotek|gado"
+             r"|magelangan|gorengan|bakwan|risol|risoles|omelet|kerupuk|kripik|keripik|kacang|roti|roma"
+             r"|sari gandum|donat|bakpao|cilok|lemper|martabak|bubur|gacoan|mcd|kfc|nabati|snack|jajan"
+             r"|biskuit|pisang|sarapan|makan)\b"),
+    ("Water", r"\b(air|aqua|aquviva|pure life|le ?minerale|vit|es|teh|tea|kopi|jus|juice|susu|milk|pocari|mizone"
+              r"|nutrisari|sprite|minuman)\b"),
+)]
+
+
+def category_type(category):
+    return "income" if category == "Active Income" else "expense"
+
+
+def guess_category(description):
+    """
+    Kategori paling sering buat deskripsi yang sama di riwayat, kalau belum pernah ada baru pakai
+    CATEGORY_RULES. Outlier ga dipelajari, itu penilaian sekali jalan. Return None kalau ga ketebak.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT category FROM transactions WHERE LOWER(TRIM(description)) = ? AND category != 'Outlier' "
+        "GROUP BY category ORDER BY COUNT(*) DESC, MAX(rowid) DESC LIMIT 1",
+        (description.strip().lower(),),
+    ).fetchone()
+    conn.close()
+    if row:
+        return row[0]
+    return next((category for category, pattern in CATEGORY_RULES if pattern.search(description)), None)
+
+
+def guess_account(category):
+    """
+    Akun expense terakhir, soalnya biasanya dipakai berturut-turut. Transaksi rutin dilewat karena
+    dicatet otomatis, bukan nunjukin akun yang lagi dipakai. Income ga ditebak: nominalnya gede dan
+    jarang, salah akun bikin saldo meleset jauh. Return None kalau harus ditanya.
+    """
+    if category_type(category) == "income":
+        return None
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT account FROM transactions WHERE account IS NOT NULL AND type = 'expense' "
+        "AND description NOT IN (SELECT description FROM recurring) ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def parse_short_input(text):
+    """
+    Parse format paling singkat, cuma deskripsi & jumlah di akhir, pemisahnya koma atau spasi:
+      "mia ayam,12000", "mia ayam 12rb", "mia ayam, Rp 12.000, cash", "service motor 1,5jt mega"
+      "nasi bali, 2, 28000" (angka di tengah = quantity, sama kayak format cepat)
+    Return (deskripsi, quantity, jumlah, akun atau None), atau None kalau bukan format ini.
+    """
+    match = SHORT_INPUT_RE.match(text)
+    if match is None:
+        return None
+
+    raw, unit = match["amount"], AMOUNT_UNITS.get((match["unit"] or "").lower(), 1)
+    if re.fullmatch(r"\d+[.,]\d{1,2}", raw):
+        # "1,5jt" jelas, "12,5" tanpa satuan ga jelas maksudnya
+        if unit == 1:
+            return None
+        amount = round(float(raw.replace(",", ".")) * unit)
+    else:
+        amount = int(re.sub(r"\D", "", raw)) * unit
+
+    account = None
+    if match["account"]:
+        account = find_account(match["account"])
+        if account is None:  # "kopi 2 gelas": angkanya bukan jumlah
+            return None
+
+    description, quantity = match["description"], 1
+    with_quantity = re.fullmatch(r"(.+?),\s*([1-9]\d*)", description)
+    if with_quantity:
+        description, quantity = with_quantity[1], int(with_quantity[2])
+
+    if amount < MIN_SHORT_AMOUNT or not re.search(r"[^\W\d_]", description):
+        return None
+    return description, quantity, amount, account
+
+
 def allowed(user_id):
     if ALLOWED_USER_ID is None:
         return True
@@ -1226,9 +1369,19 @@ def handle_message(msg):
         return
 
     quick = parse_quick_input(text)
+    header = "Tersimpan ✅"
     if quick is None:
-        send_message(chat_id, "Format ga kebaca, ga disimpan.\n\n" + HELP_TEXT)
-        return
+        short = parse_short_input(text)
+        if short is None:
+            send_message(chat_id, "Format ga kebaca, ga disimpan.\n\n" + HELP_TEXT)
+            return
+        description, quantity, amount, account = short
+        category = guess_category(description)
+        # kategori ga ketebak: akun ditentuin setelah kategorinya dipilih (income ga ditebak akunnya)
+        if account is None and category is not None:
+            account = guess_account(category)
+        quick = description, quantity, amount, category_type(category), category, account
+        header = AUTO_SAVED_HEADER
 
     description, quantity, amount, tx_type, category, account = quick
     tx = {
@@ -1237,12 +1390,7 @@ def handle_message(msg):
         # waktu transaksi = waktu pesan dikirim, bukan waktu script jalan
         "created": datetime.fromtimestamp(msg["date"]).strftime("%Y%m%d%H%M%S"),
     }
-    if account is None:
-        pending_add[chat_id] = {**tx, "step": "account"}
-        send_message(chat_id, f"{description} | Rp{amount:,} | {tx_type} | {category}\nPakai akun mana?",
-                     account_keyboard())
-        return
-    save_transaction(chat_id, tx)
+    save_or_ask(chat_id, tx, header)
 
 
 def handle_update(update):

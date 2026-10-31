@@ -4,7 +4,7 @@ Bot Telegram pencatat keuangan pribadi. Transaksi expense/income disimpan di SQL
 
 ## Fitur
 
-- Input transaksi lewat tombol (`/add`) atau satu baris teks (format cepat)
+- Input transaksi lewat tombol (`/add`), satu baris teks (format cepat), atau cukup deskripsi dan jumlah (format singkat)
 - Saldo per akun yang otomatis berubah setiap ada transaksi, lengkap dengan riwayatnya
 - Laporan Excel: ringkasan bulanan (Income, Expense, Expense Ratio, Saving, Saving %) + detail transaksi per bulan
 - Gambar expense 7 hari terakhir: per hari dan per kategori
@@ -129,6 +129,26 @@ Gaji, 5000000, income, Active Income, mega
 - `akun` boleh tidak ditulis. Kalau tidak ada, bot menanyakan akunnya lewat tombol.
 - Nama akun boleh disingkat atau ditulis huruf kecil, selama tidak ambigu: `mega`, `bca`, `dana`, `shopee`, `cash`.
 - Waktu transaksi adalah waktu pesan dikirim.
+
+### Format singkat
+
+Cukup tulis deskripsi dan jumlah. Pemisahnya boleh koma atau spasi, dan bagian lainnya ditebak bot:
+
+```
+mie ayam,12000
+mie ayam 12rb
+mie ayam, Rp 12.000, dana
+service motor 1,5jt mega
+nasi bali, 2, 28000
+```
+
+- `amount` boleh ditulis `12000`, `12.000`, `Rp 12.000`, `12rb`, `12k`, `12 ribu`, `1,5jt`, atau `2 juta`. Di bawah Rp100 atau angka desimal tanpa satuan (`12,5`) tidak dianggap transaksi.
+- `akun` boleh ditulis di belakang jumlah, dan angka di tengah dibaca sebagai quantity, sama seperti format cepat.
+- **Kategori**: kategori yang paling sering dipakai untuk deskripsi yang sama (tanpa membedakan huruf besar/kecil). Kalau deskripsinya belum pernah ada, bot memakai aturan regex `CATEGORY_RULES` di `ingest_transaction.py`. Kalau tetap tidak ketemu, bot menanyakan kategorinya lewat tombol. Tambah kata kunci baru di aturan itu; urutannya penting karena aturan pertama yang cocok yang dipakai.
+- **Tipe**: `income` untuk kategori Active Income, selain itu `expense`.
+- **Akun**: akun expense terakhir, tanpa menghitung transaksi rutin. Kalau tipenya `income` atau belum ada riwayat akun, bot menanyakan akunnya lewat tombol.
+
+Balasannya bertuliskan `Tersimpan otomatis`. Periksa kategori dan akunnya di sana, dan kalau salah perbaiki dengan `/edit` atau `/undo`.
 
 ### Kategori
 
